@@ -7,30 +7,33 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 )
 
 const createPayment = `-- name: CreatePayment :one
 INSERT INTO payments (
-  amount, currency, reference, status
+  amount, currency, reference, status, idempotency_key
 ) VALUES (
-  ?, ?, ?, ?
+  ?, ?, ?, ?, ?
 )
-RETURNING amount, currency, reference, status, created_at
+RETURNING amount, currency, reference, idempotency_key, status, created_at
 `
 
 type CreatePaymentParams struct {
-	Amount    int64
-	Currency  string
-	Reference string
-	Status    string
+	Amount         int64
+	Currency       string
+	Reference      string
+	Status         string
+	IdempotencyKey sql.NullString
 }
 
 type CreatePaymentRow struct {
-	Amount    int64
-	Currency  string
-	Reference string
-	Status    string
-	CreatedAt string
+	Amount         int64
+	Currency       string
+	Reference      string
+	IdempotencyKey sql.NullString
+	Status         string
+	CreatedAt      string
 }
 
 func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (CreatePaymentRow, error) {
@@ -39,11 +42,48 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (C
 		arg.Currency,
 		arg.Reference,
 		arg.Status,
+		arg.IdempotencyKey,
 	)
 	var i CreatePaymentRow
 	err := row.Scan(
 		&i.Amount,
 		&i.Currency,
+		&i.Reference,
+		&i.IdempotencyKey,
+		&i.Status,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getPaymentByIdempotency = `-- name: GetPaymentByIdempotency :one
+SELECT
+    amount,
+    currency,
+    idempotency_key,
+    reference,
+    status,
+    created_at
+FROM payments
+WHERE idempotency_key = ? LIMIT 1
+`
+
+type GetPaymentByIdempotencyRow struct {
+	Amount         int64
+	Currency       string
+	IdempotencyKey sql.NullString
+	Reference      string
+	Status         string
+	CreatedAt      string
+}
+
+func (q *Queries) GetPaymentByIdempotency(ctx context.Context, idempotencyKey sql.NullString) (GetPaymentByIdempotencyRow, error) {
+	row := q.db.QueryRowContext(ctx, getPaymentByIdempotency, idempotencyKey)
+	var i GetPaymentByIdempotencyRow
+	err := row.Scan(
+		&i.Amount,
+		&i.Currency,
+		&i.IdempotencyKey,
 		&i.Reference,
 		&i.Status,
 		&i.CreatedAt,
@@ -55,6 +95,7 @@ const getPaymentByReference = `-- name: GetPaymentByReference :one
 SELECT
     amount,
     currency,
+    idempotency_key,
     reference,
     status,
     created_at
@@ -63,11 +104,12 @@ WHERE reference = ? LIMIT 1
 `
 
 type GetPaymentByReferenceRow struct {
-	Amount    int64
-	Currency  string
-	Reference string
-	Status    string
-	CreatedAt string
+	Amount         int64
+	Currency       string
+	IdempotencyKey sql.NullString
+	Reference      string
+	Status         string
+	CreatedAt      string
 }
 
 func (q *Queries) GetPaymentByReference(ctx context.Context, reference string) (GetPaymentByReferenceRow, error) {
@@ -76,6 +118,7 @@ func (q *Queries) GetPaymentByReference(ctx context.Context, reference string) (
 	err := row.Scan(
 		&i.Amount,
 		&i.Currency,
+		&i.IdempotencyKey,
 		&i.Reference,
 		&i.Status,
 		&i.CreatedAt,

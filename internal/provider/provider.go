@@ -17,6 +17,7 @@ type Provider interface {
 	Charge(ctx context.Context, req CreateCharge) error
 }
 
+var TimeoutError = errors.New("Timeout Error")
 var NetworkError = errors.New("Network Error")
 
 type MockProvider struct{}
@@ -28,7 +29,13 @@ func NewMockProvider() *MockProvider {
 func (p MockProvider) Charge(ctx context.Context, req CreateCharge) error {
 	max := 500
 	min := 50
-	time.Sleep(time.Duration(rand.IntN(max-min) + min))
+	delay := time.Duration(rand.IntN(max-min)+min) * time.Millisecond
+
+	select {
+	case <-time.After(delay):
+	case <-ctx.Done():
+		return TimeoutError
+	}
 
 	if rand.N(10) > 5 {
 		return NetworkError

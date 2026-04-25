@@ -4,11 +4,16 @@
 
 package repository
 
+import (
+	"database/sql"
+)
+
 type Payment struct {
-	ID        int64
-	Amount    int64
-	Currency  string
-	Reference string
-	Status    string
-	CreatedAt string
+	ID             int64
+	Amount         int64
+	Currency       string
+	Reference      string
+	Status         string
+	CreatedAt      string
+	IdempotencyKey sql.NullString
 }

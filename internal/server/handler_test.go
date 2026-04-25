@@ -24,8 +24,10 @@ type testProvider struct {
 
 func (p *testProvider) Charge(ctx context.Context, req provider.CreateCharge) error {
 	p.callCount++
-	if p.delay > 0 {
-		time.Sleep(p.delay)
+	select {
+	case <-time.After(p.delay):
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 	if p.shouldFail {
 		return provider.NetworkError
