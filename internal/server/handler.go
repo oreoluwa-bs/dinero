@@ -6,8 +6,32 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/go-chi/chi"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
 )
+
+func (s Server) getCharge(w http.ResponseWriter, r *http.Request) {
+	ref := chi.URLParam(r, "reference")
+	if ref == "" {
+		writeError(w, http.StatusBadRequest, "missing reference")
+		return
+	}
+
+	payment, err := s.store.GetPaymentByReference(r.Context(), ref)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "payment not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ApiResponse{
+		Data:    payment,
+		Message: "Payment found",
+	})
+}
 
 type createChargeRequest struct {
 	Amount    int64  `json:"amount"`

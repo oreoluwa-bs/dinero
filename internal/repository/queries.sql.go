@@ -16,7 +16,7 @@ INSERT INTO payments (
 ) VALUES (
   ?, ?, ?, ?, ?
 )
-RETURNING amount, currency, reference, idempotency_key, status, created_at
+RETURNING id, amount, currency, reference, idempotency_key, status, created_at
 `
 
 type CreatePaymentParams struct {
@@ -28,6 +28,7 @@ type CreatePaymentParams struct {
 }
 
 type CreatePaymentRow struct {
+	ID             int64
 	Amount         int64
 	Currency       string
 	Reference      string
@@ -46,6 +47,7 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (C
 	)
 	var i CreatePaymentRow
 	err := row.Scan(
+		&i.ID,
 		&i.Amount,
 		&i.Currency,
 		&i.Reference,
@@ -99,6 +101,7 @@ func (q *Queries) GetPaymentByIdempotency(ctx context.Context, idempotencyKey sq
 
 const getPaymentByReference = `-- name: GetPaymentByReference :one
 SELECT
+    id,
     amount,
     currency,
     idempotency_key,
@@ -112,6 +115,7 @@ WHERE reference = ? LIMIT 1
 `
 
 type GetPaymentByReferenceRow struct {
+	ID             int64
 	Amount         int64
 	Currency       string
 	IdempotencyKey sql.NullString
@@ -126,6 +130,7 @@ func (q *Queries) GetPaymentByReference(ctx context.Context, reference string) (
 	row := q.db.QueryRowContext(ctx, getPaymentByReference, reference)
 	var i GetPaymentByReferenceRow
 	err := row.Scan(
+		&i.ID,
 		&i.Amount,
 		&i.Currency,
 		&i.IdempotencyKey,

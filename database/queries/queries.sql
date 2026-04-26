@@ -1,5 +1,6 @@
 -- name: GetPaymentByReference :one
 SELECT
+    id,
     amount,
     currency,
     idempotency_key,
@@ -31,8 +32,7 @@ INSERT INTO payments (
 ) VALUES (
   ?, ?, ?, ?, ?
 )
-RETURNING amount, currency, reference, idempotency_key, status, created_at;
-
+RETURNING id, amount, currency, reference, idempotency_key, status, created_at;
 -- name: UpdatePaymentStatus :exec
 UPDATE payments
 SET status = ?,

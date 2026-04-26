@@ -31,6 +31,7 @@ func (s *Server) Router() http.Handler {
 
 	r.Route("/charges", func(r chi.Router) {
 		r.Post("/", s.createCharge)
+		r.Get("/{reference}", s.getCharge)
 	})
 	return r
 }
