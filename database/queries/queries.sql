@@ -5,6 +5,8 @@ SELECT
     idempotency_key,
     reference,
     status,
+    attempts,
+    next_retry_at,
     created_at
 FROM payments
 WHERE reference = ? LIMIT 1;
@@ -16,6 +18,8 @@ SELECT
     idempotency_key,
     reference,
     status,
+    attempts,
+    next_retry_at,
     created_at
 FROM payments
 WHERE idempotency_key = ? LIMIT 1;
@@ -28,3 +32,10 @@ INSERT INTO payments (
   ?, ?, ?, ?, ?
 )
 RETURNING amount, currency, reference, idempotency_key, status, created_at;
+
+-- name: UpdatePaymentStatus :exec
+UPDATE payments
+SET status = ?,
+attempts = ?,
+next_retry_at = ?
+WHERE idempotency_key = ?;

@@ -16,4 +16,6 @@ type Payment struct {
 	Status         string
 	CreatedAt      string
 	IdempotencyKey sql.NullString
+	NextRetryAt    sql.NullString
+	Attempts       int64
 }

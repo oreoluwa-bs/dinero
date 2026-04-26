@@ -63,6 +63,8 @@ SELECT
     idempotency_key,
     reference,
     status,
+    attempts,
+    next_retry_at,
     created_at
 FROM payments
 WHERE idempotency_key = ? LIMIT 1
@@ -74,6 +76,8 @@ type GetPaymentByIdempotencyRow struct {
 	IdempotencyKey sql.NullString
 	Reference      string
 	Status         string
+	Attempts       int64
+	NextRetryAt    sql.NullString
 	CreatedAt      string
 }
 
@@ -86,6 +90,8 @@ func (q *Queries) GetPaymentByIdempotency(ctx context.Context, idempotencyKey sq
 		&i.IdempotencyKey,
 		&i.Reference,
 		&i.Status,
+		&i.Attempts,
+		&i.NextRetryAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -98,6 +104,8 @@ SELECT
     idempotency_key,
     reference,
     status,
+    attempts,
+    next_retry_at,
     created_at
 FROM payments
 WHERE reference = ? LIMIT 1
@@ -109,6 +117,8 @@ type GetPaymentByReferenceRow struct {
 	IdempotencyKey sql.NullString
 	Reference      string
 	Status         string
+	Attempts       int64
+	NextRetryAt    sql.NullString
 	CreatedAt      string
 }
 
@@ -121,7 +131,34 @@ func (q *Queries) GetPaymentByReference(ctx context.Context, reference string) (
 		&i.IdempotencyKey,
 		&i.Reference,
 		&i.Status,
+		&i.Attempts,
+		&i.NextRetryAt,
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const updatePaymentStatus = `-- name: UpdatePaymentStatus :exec
+UPDATE payments
+SET status = ?,
+attempts = ?,
+next_retry_at = ?
+WHERE idempotency_key = ?
+`
+
+type UpdatePaymentStatusParams struct {
+	Status         string
+	Attempts       int64
+	NextRetryAt    sql.NullString
+	IdempotencyKey sql.NullString
+}
+
+func (q *Queries) UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error {
+	_, err := q.db.ExecContext(ctx, updatePaymentStatus,
+		arg.Status,
+		arg.Attempts,
+		arg.NextRetryAt,
+		arg.IdempotencyKey,
+	)
+	return err
 }
