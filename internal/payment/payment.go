@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/oreoluwa-bs/dinero/internal/provider"
@@ -40,8 +39,6 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	if err != nil {
 		return err
 	}
-
-	fmt.Println(val)
 
 	idemKey, ok := val["payment_idempotency_key"].(string)
 	if !ok {
