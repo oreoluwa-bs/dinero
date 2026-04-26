@@ -33,6 +33,15 @@ INSERT INTO payments (
   ?, ?, ?, ?, ?
 )
 RETURNING id, amount, currency, reference, idempotency_key, status, created_at;
+-- name: GetFailedPaymentsForRetry :many
+SELECT idempotency_key, reference
+FROM payments
+WHERE status = 'failed'
+  AND next_retry_at IS NOT NULL
+  AND next_retry_at <= datetime('now')
+  AND attempts < 5
+LIMIT 50;
+
 -- name: UpdatePaymentStatus :exec
 UPDATE payments
 SET status = ?,

@@ -58,6 +58,44 @@ func (q *Queries) CreatePayment(ctx context.Context, arg CreatePaymentParams) (C
 	return i, err
 }
 
+const getFailedPaymentsForRetry = `-- name: GetFailedPaymentsForRetry :many
+SELECT idempotency_key, reference
+FROM payments
+WHERE status = 'failed'
+  AND next_retry_at IS NOT NULL
+  AND next_retry_at <= datetime('now')
+  AND attempts < 5
+LIMIT 50
+`
+
+type GetFailedPaymentsForRetryRow struct {
+	IdempotencyKey sql.NullString
+	Reference      string
+}
+
+func (q *Queries) GetFailedPaymentsForRetry(ctx context.Context) ([]GetFailedPaymentsForRetryRow, error) {
+	rows, err := q.db.QueryContext(ctx, getFailedPaymentsForRetry)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetFailedPaymentsForRetryRow
+	for rows.Next() {
+		var i GetFailedPaymentsForRetryRow
+		if err := rows.Scan(&i.IdempotencyKey, &i.Reference); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getPaymentByIdempotency = `-- name: GetPaymentByIdempotency :one
 SELECT
     amount,

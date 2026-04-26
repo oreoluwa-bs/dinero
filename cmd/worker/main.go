@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/oreoluwa-bs/dinero/database"
 	"github.com/oreoluwa-bs/dinero/internal/config"
@@ -35,6 +36,8 @@ func main() {
 	}
 
 	paymentSvc := payment.NewService(*store, paymentPrv, db)
+
+	paymentSvc.StartRetryPoller(ctx, rabbit, 5*time.Second)
 
 	err = rabbit.Start(ctx, "payments.queue", func(ctx context.Context, body []byte) error {
 		return paymentSvc.HandlePaymentEvent(ctx, body)

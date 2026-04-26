@@ -12,6 +12,10 @@ import (
 	"github.com/oreoluwa-bs/dinero/internal/repository"
 )
 
+type Publisher interface {
+	Publish(ctx context.Context, exchange, routingKey string, body []byte) error
+}
+
 type Service struct {
 	store    repository.Queries
 	provider provider.Provider
@@ -87,7 +91,7 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		Reference: pm.Reference,
 	})
 	if err != nil {
-		retyAt := time.Now().Add(time.Minute * time.Duration(pm.Attempts))
+		retyAt := time.Now().UTC().Add(time.Minute * time.Duration(pm.Attempts))
 		lerr := qtx.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
 			Status:   "failed",
 			Attempts: pm.Attempts + 1,
@@ -106,7 +110,7 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		}
 
 		tx.Commit()
-		return err
+		return nil
 	}
 
 	err = qtx.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
@@ -123,4 +127,34 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 
 	tx.Commit()
 	return nil
+}
+
+func (s Service) StartRetryPoller(ctx context.Context, publisher Publisher, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.retryFailedPayments(ctx, publisher)
+			}
+		}
+	}()
+}
+
+func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
+	payments, err := s.store.GetFailedPaymentsForRetry(ctx)
+	if err != nil {
+		return
+	}
+	for _, p := range payments {
+		payload, _ := json.Marshal(map[string]string{
+			"payment_idempotency_key": p.IdempotencyKey.String,
+			"payment_reference":       p.Reference,
+			"status":                  "created",
+		})
+		publisher.Publish(ctx, "", "payments.queue", payload)
+	}
 }
