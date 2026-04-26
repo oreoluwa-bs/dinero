@@ -85,7 +85,7 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 
 	payload, err := json.Marshal(map[string]string{"payment_idempotency_key": c.IdempotencyKey.String,
 		"payment_reference": c.Reference, "status": "created"})
-	s.publisher.Publish(context.Background(), "payments.queue", "payment.created", payload)
+	s.publisher.Publish(context.Background(), "", "payments.queue", payload)
 
 	writeJSON(w, http.StatusAccepted, ApiResponse{
 		Data:    c,
