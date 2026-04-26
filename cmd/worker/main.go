@@ -3,18 +3,16 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/oreoluwa-bs/dinero/database"
 	"github.com/oreoluwa-bs/dinero/internal/config"
+	"github.com/oreoluwa-bs/dinero/internal/payment"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/queue"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
-	"github.com/oreoluwa-bs/dinero/internal/server"
 )
 
 func main() {
@@ -31,32 +29,23 @@ func main() {
 
 	store := repository.New(db)
 	paymentPrv := provider.NewMockProvider()
-	qu, err := queue.New(cfg.RABBITMQ_URL)
+	rabbit, err := queue.New(cfg.RABBITMQ_URL)
 	if err != nil {
 		log.Fatalf("queue init failed: %v", err)
 	}
 
-	apiServer := server.NewServer(paymentPrv, *store, qu)
+	paymentSvc := payment.NewService(*store, paymentPrv, db)
 
-	srv := &http.Server{
-		Addr:              ":" + cfg.PORT,
-		Handler:           apiServer.Router(),
-		ReadHeaderTimeout: 5 * time.Second,
+	err = rabbit.Start(ctx, "payments.queue", func(ctx context.Context, body []byte) error {
+		return paymentSvc.HandlePaymentEvent(ctx, body)
+	})
+
+	if err != nil {
+		log.Fatalf("Consumer failed: %v", err)
 	}
-
-	go func() {
-		log.Printf("server listening on :%s", cfg.PORT)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
-		}
-	}()
 
 	<-ctx.Done()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("shutdown error: %v", err)
-	}
+	log.Println("Worker shutdown")
 }
 
 func getEnv(key, fallback string) string {

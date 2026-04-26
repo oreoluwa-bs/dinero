@@ -35,6 +35,20 @@ func (p *testProvider) Charge(ctx context.Context, req provider.CreateCharge) er
 	return nil
 }
 
+type mockPublisher struct {
+	calls []publishCall
+}
+type publishCall struct {
+	exchange   string
+	routingKey string
+	body       []byte
+}
+
+func (m *mockPublisher) Publish(_ context.Context, exchange, routingKey string, body []byte) error {
+	m.calls = append(m.calls, publishCall{exchange, routingKey, body})
+	return nil
+}
+
 func setupTestDB(t *testing.T) (*repository.Queries, *sql.DB) {
 	t.Helper()
 
@@ -50,7 +64,7 @@ func TestHappyPath_Green(t *testing.T) {
 	store, db := setupTestDB(t)
 	defer db.Close()
 
-	srv := NewServer(&testProvider{}, *store)
+	srv := NewServer(&testProvider{}, *store, &mockPublisher{})
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 
@@ -78,7 +92,7 @@ func TestDuplicateReference_ShouldFail_Red(t *testing.T) {
 	store, db := setupTestDB(t)
 	defer db.Close()
 
-	srv := NewServer(&testProvider{}, *store)
+	srv := NewServer(&testProvider{}, *store, &mockPublisher{})
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 
@@ -114,7 +128,7 @@ func TestTimeout_ShouldFail_Red(t *testing.T) {
 	defer db.Close()
 
 	p := &testProvider{delay: 100 * time.Millisecond}
-	srv := NewServer(p, *store)
+	srv := NewServer(p, *store, &mockPublisher{})
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 

@@ -3,9 +3,9 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 
-	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
 )
 
@@ -37,35 +37,10 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err == nil {
-		writeJSON(w, http.StatusCreated, ApiResponse{
+		writeJSON(w, http.StatusOK, ApiResponse{
 			Data:    existingPayment,
 			Message: "Created Successfully",
 		})
-		return
-	}
-
-	if err := s.paymentProvider.Charge(ctx, provider.CreateCharge{
-		Amount:    req.Amount,
-		Currency:  req.Currency,
-		Reference: req.Reference,
-	}); err != nil {
-		_, lerr := s.store.CreatePayment(context.Background(), repository.CreatePaymentParams{
-			Amount:    req.Amount,
-			Currency:  req.Currency,
-			Reference: req.Reference,
-			Status:    "failed",
-			IdempotencyKey: sql.NullString{
-				String: idemKey,
-				Valid:  idemKey != "",
-			},
-		})
-
-		if lerr != nil {
-			writeError(w, http.StatusBadRequest, lerr.Error())
-			return
-		}
-
-		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -73,7 +48,7 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		Amount:    req.Amount,
 		Currency:  req.Currency,
 		Reference: req.Reference,
-		Status:    "completed",
+		Status:    "pending",
 		IdempotencyKey: sql.NullString{
 			String: idemKey,
 			Valid:  idemKey != "",
@@ -84,8 +59,12 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, ApiResponse{
+	payload, err := json.Marshal(map[string]string{"payment_idempotency_key": c.IdempotencyKey.String,
+		"payment_reference": c.Reference, "status": "created"})
+	s.publisher.Publish(context.Background(), "payments.queue", "payment.created", payload)
+
+	writeJSON(w, http.StatusAccepted, ApiResponse{
 		Data:    c,
-		Message: "Created Successfully",
+		Message: "Charge accepted",
 	})
 }
