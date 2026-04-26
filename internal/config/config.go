@@ -5,12 +5,14 @@ import "os"
 type Config struct {
 	PORT         string
 	DATABASE_URL string
+	RABBITMQ_URL string
 }
 
 func NewConfig() *Config {
 	return &Config{
 		PORT:         getEnv("PORT", "8080"),
 		DATABASE_URL: getEnv("DATABASE_URL", "./data.db"),
+		RABBITMQ_URL: getEnv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"),
 	}
 }
 
