@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -60,11 +62,19 @@ func setupTestDB(t *testing.T) (*repository.Queries, *sql.DB) {
 	return repository.New(db), db
 }
 
+func setupLogger() *slog.Logger {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{})
+	logger := slog.New(handler)
+	return logger
+}
+
 func TestHappyPath_Green(t *testing.T) {
 	store, db := setupTestDB(t)
 	defer db.Close()
 
-	srv := NewServer(&testProvider{}, *store, &mockPublisher{})
+	logger := setupLogger()
+
+	srv := NewServer(&testProvider{}, *store, &mockPublisher{}, logger)
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 
@@ -92,7 +102,8 @@ func TestDuplicateReference_ShouldFail_Red(t *testing.T) {
 	store, db := setupTestDB(t)
 	defer db.Close()
 
-	srv := NewServer(&testProvider{}, *store, &mockPublisher{})
+	logger := setupLogger()
+	srv := NewServer(&testProvider{}, *store, &mockPublisher{}, logger)
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 
@@ -131,8 +142,9 @@ func TestTimeout_ShouldFail_Red(t *testing.T) {
 	store, db := setupTestDB(t)
 	defer db.Close()
 
+	logger := setupLogger()
 	p := &testProvider{delay: 100 * time.Millisecond}
-	srv := NewServer(p, *store, &mockPublisher{})
+	srv := NewServer(p, *store, &mockPublisher{}, logger)
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/oreoluwa-bs/dinero/database"
 	"github.com/oreoluwa-bs/dinero/internal/config"
+	"github.com/oreoluwa-bs/dinero/internal/logger"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/queue"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
@@ -22,6 +24,9 @@ func main() {
 	defer stop()
 
 	cfg := config.NewConfig()
+
+	logger := logger.New(cfg)
+	slog.SetDefault(logger)
 
 	db := database.NewDatabase(cfg.DATABASE_URL)
 	if err := database.Up(db, "database/migrations"); err != nil {
@@ -36,7 +41,7 @@ func main() {
 		log.Fatalf("queue init failed: %v", err)
 	}
 
-	apiServer := server.NewServer(paymentPrv, *store, qu)
+	apiServer := server.NewServer(paymentPrv, *store, qu, logger)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.PORT,

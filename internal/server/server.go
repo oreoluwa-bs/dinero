@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi"
@@ -14,13 +15,15 @@ type Server struct {
 	paymentProvider provider.Provider
 	store           repository.Queries
 	publisher       queue.Publisher
+	logger          *slog.Logger
 }
 
-func NewServer(prov provider.Provider, store repository.Queries, publisher queue.Publisher) *Server {
+func NewServer(prov provider.Provider, store repository.Queries, publisher queue.Publisher, logger *slog.Logger) *Server {
 	return &Server{
 		paymentProvider: prov,
 		store:           store,
 		publisher:       publisher,
+		logger:          logger,
 	}
 }
 
