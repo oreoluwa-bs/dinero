@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi"
@@ -20,12 +21,20 @@ func (s Server) getCharge(w http.ResponseWriter, r *http.Request) {
 	payment, err := s.store.GetPaymentByReference(r.Context(), ref)
 	if err != nil {
 		if err == sql.ErrNoRows {
+			s.logger.Info("payment not found", slog.String("reference", ref))
 			writeError(w, http.StatusNotFound, "payment not found")
 			return
 		}
+		s.logger.Error("failed to get payment", slog.String("reference", ref), slog.String("error", err.Error()))
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	s.logger.Info("payment lookup",
+		slog.String("reference", payment.Reference),
+		slog.String("status", payment.Status),
+		slog.Int64("attempts", payment.Attempts),
+	)
 
 	writeJSON(w, http.StatusOK, ApiResponse{
 		Data:    payment,
@@ -43,6 +52,7 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req createChargeRequest
 	if err := decodeJSON(r, &req); err != nil {
+		s.logger.Error("failed to decode charge request", slog.String("error", err.Error()))
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -52,15 +62,31 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		idemKey = req.Reference // fallback
 	}
 
+	s.logger.Info("charge request received",
+		slog.String("reference", req.Reference),
+		slog.String("idempotency_key", idemKey),
+		slog.Int64("amount", req.Amount),
+		slog.String("currency", req.Currency),
+	)
+
 	existingPayment, err := s.store.GetPaymentByIdempotency(ctx, sql.NullString{
 		String: idemKey,
 		Valid:  idemKey != "",
 	})
 	if err != nil && err != sql.ErrNoRows {
+		s.logger.Error("failed to check idempotency",
+			slog.String("idempotency_key", idemKey),
+			slog.String("error", err.Error()),
+		)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err == nil {
+		s.logger.Info("idempotent replay, returning existing payment",
+			slog.String("idempotency_key", idemKey),
+			slog.String("reference", existingPayment.Reference),
+			slog.String("status", existingPayment.Status),
+		)
 		writeJSON(w, http.StatusOK, ApiResponse{
 			Data:    existingPayment,
 			Message: "Created Successfully",
@@ -79,13 +105,40 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 	if err != nil {
+		s.logger.Error("failed to create payment",
+			slog.String("reference", req.Reference),
+			slog.String("error", err.Error()),
+		)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	s.logger.Info("payment created",
+		slog.String("idempotency_key", c.IdempotencyKey.String),
+		slog.String("reference", c.Reference),
+		slog.String("status", c.Status),
+	)
+
 	payload, err := json.Marshal(map[string]string{"payment_idempotency_key": c.IdempotencyKey.String,
 		"payment_reference": c.Reference, "status": "created"})
-	s.publisher.Publish(context.Background(), "", "payments.queue", payload)
+	if err != nil {
+		s.logger.Error("failed to marshal queue payload",
+			slog.String("reference", c.Reference),
+			slog.String("error", err.Error()),
+		)
+	} else {
+		if pubErr := s.publisher.Publish(context.Background(), "", "payments.queue", payload); pubErr != nil {
+			s.logger.Error("failed to publish to queue",
+				slog.String("reference", c.Reference),
+				slog.String("error", pubErr.Error()),
+			)
+		} else {
+			s.logger.Info("payment published to queue",
+				slog.String("reference", c.Reference),
+				slog.String("queue", "payments.queue"),
+			)
+		}
+	}
 
 	writeJSON(w, http.StatusAccepted, ApiResponse{
 		Data:    c,

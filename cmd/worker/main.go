@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/oreoluwa-bs/dinero/database"
 	"github.com/oreoluwa-bs/dinero/internal/config"
+	"github.com/oreoluwa-bs/dinero/internal/logger"
 	"github.com/oreoluwa-bs/dinero/internal/payment"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/queue"
@@ -21,6 +23,9 @@ func main() {
 	defer stop()
 
 	cfg := config.NewConfig()
+
+	lg := logger.New(cfg)
+	slog.SetDefault(lg)
 
 	db := database.NewDatabase(cfg.DATABASE_URL)
 	if err := database.Up(db, "database/migrations"); err != nil {
@@ -35,7 +40,7 @@ func main() {
 		log.Fatalf("queue init failed: %v", err)
 	}
 
-	paymentSvc := payment.NewService(*store, paymentPrv, db)
+	paymentSvc := payment.NewService(*store, paymentPrv, db, lg)
 
 	paymentSvc.StartRetryPoller(ctx, rabbit, 5*time.Second)
 
@@ -48,7 +53,7 @@ func main() {
 	}
 
 	<-ctx.Done()
-	log.Println("Worker shutdown")
+	slog.Info("Worker shutdown")
 }
 
 func getEnv(key, fallback string) string {

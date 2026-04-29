@@ -33,6 +33,7 @@ func NewService(
 		store:    store,
 		provider: provider,
 		db:       db,
+		logger:   logger,
 	}
 }
 
@@ -40,16 +41,29 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	var val map[string]interface{}
 	err := json.Unmarshal(payload, &val)
 	if err != nil {
+		s.logger.Error("failed to unmarshal payment event", slog.String("error", err.Error()))
 		return err
 	}
 
 	idemKey, ok := val["payment_idempotency_key"].(string)
 	if !ok {
+		s.logger.Error("missing idempotency key in payment event payload")
 		return errors.New("missing idempotency key in payload")
 	}
 
+	ref, _ := val["payment_reference"].(string)
+
+	s.logger.Info("payment event received",
+		slog.String("idempotency_key", idemKey),
+		slog.String("reference", ref),
+	)
+
 	tx, err := s.db.Begin()
 	if err != nil {
+		s.logger.Error("failed to begin transaction",
+			slog.String("idempotency_key", idemKey),
+			slog.String("error", err.Error()),
+		)
 		return err
 	}
 	defer tx.Rollback()
@@ -60,16 +74,40 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		Valid:  idemKey != "",
 	})
 	if err != nil {
+		s.logger.Error("failed to get payment by idempotency",
+			slog.String("idempotency_key", idemKey),
+			slog.String("error", err.Error()),
+		)
 		return err
 	}
 
+	s.logger.Info("payment state resolved",
+		slog.String("idempotency_key", idemKey),
+		slog.String("reference", pm.Reference),
+		slog.String("status", pm.Status),
+		slog.Int64("attempts", pm.Attempts),
+	)
+
 	if pm.Status == "processing" {
+		s.logger.Warn("payment still processing, skipping duplicate event",
+			slog.String("idempotency_key", idemKey),
+			slog.String("reference", pm.Reference),
+		)
 		return nil
 	}
 	if pm.Status == "completed" {
+		s.logger.Info("payment already completed, skipping",
+			slog.String("idempotency_key", idemKey),
+			slog.String("reference", pm.Reference),
+		)
 		return nil
 	}
 	if pm.Status == "failed" && pm.Attempts > 3 {
+		s.logger.Info("payment terminally failed, skipping",
+			slog.String("idempotency_key", idemKey),
+			slog.String("reference", pm.Reference),
+			slog.Int64("attempts", pm.Attempts),
+		)
 		return nil
 	}
 
@@ -82,8 +120,18 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		},
 	})
 	if err != nil {
+		s.logger.Error("failed to update payment status to processing",
+			slog.String("idempotency_key", idemKey),
+			slog.String("error", err.Error()),
+		)
 		return err
 	}
+
+	s.logger.Info("payment transitioned to processing",
+		slog.String("idempotency_key", idemKey),
+		slog.String("reference", pm.Reference),
+		slog.Int64("attempts", pm.Attempts+1),
+	)
 
 	err = s.provider.Charge(ctx, provider.CreateCharge{
 		Amount:    pm.Amount,
@@ -106,7 +154,28 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		})
 
 		if lerr != nil {
+			s.logger.Error("failed to update payment status to failed",
+				slog.String("idempotency_key", idemKey),
+				slog.String("error", lerr.Error()),
+			)
 			return lerr
+		}
+
+		if pm.Attempts+1 > 3 {
+			s.logger.Error("payment terminally failed after max retries",
+				slog.String("idempotency_key", idemKey),
+				slog.String("reference", pm.Reference),
+				slog.Int64("attempts", pm.Attempts+1),
+				slog.String("last_error", err.Error()),
+			)
+		} else {
+			s.logger.Warn("provider charge failed, retry scheduled",
+				slog.String("idempotency_key", idemKey),
+				slog.String("reference", pm.Reference),
+				slog.Int64("attempts", pm.Attempts+1),
+				slog.String("next_retry_at", retyAt.Format(time.RFC3339)),
+				slog.String("error", err.Error()),
+			)
 		}
 
 		tx.Commit()
@@ -122,20 +191,32 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		},
 	})
 	if err != nil {
+		s.logger.Error("failed to update payment status to completed",
+			slog.String("idempotency_key", idemKey),
+			slog.String("error", err.Error()),
+		)
 		return err
 	}
+
+	s.logger.Info("payment completed",
+		slog.String("idempotency_key", idemKey),
+		slog.String("reference", pm.Reference),
+		slog.Int64("attempts", pm.Attempts+1),
+	)
 
 	tx.Commit()
 	return nil
 }
 
 func (s Service) StartRetryPoller(ctx context.Context, publisher Publisher, interval time.Duration) {
+	s.logger.Info("retry poller started", slog.Duration("interval", interval))
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
+				s.logger.Info("retry poller shutting down")
 				return
 			case <-ticker.C:
 				s.retryFailedPayments(ctx, publisher)
@@ -147,14 +228,31 @@ func (s Service) StartRetryPoller(ctx context.Context, publisher Publisher, inte
 func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
 	payments, err := s.store.GetFailedPaymentsForRetry(ctx)
 	if err != nil {
+		s.logger.Error("failed to fetch payments for retry", slog.String("error", err.Error()))
 		return
 	}
+	if len(payments) == 0 {
+		return
+	}
+
+	s.logger.Info("retrying failed payments", slog.Int("count", len(payments)))
+
 	for _, p := range payments {
 		payload, _ := json.Marshal(map[string]string{
 			"payment_idempotency_key": p.IdempotencyKey.String,
 			"payment_reference":       p.Reference,
 			"status":                  "created",
 		})
-		publisher.Publish(ctx, "", "payments.queue", payload)
+		s.logger.Info("republishing payment for retry",
+			slog.String("idempotency_key", p.IdempotencyKey.String),
+			slog.String("reference", p.Reference),
+		)
+		if err := publisher.Publish(ctx, "", "payments.queue", payload); err != nil {
+			s.logger.Error("failed to republish payment for retry",
+				slog.String("idempotency_key", p.IdempotencyKey.String),
+				slog.String("reference", p.Reference),
+				slog.String("error", err.Error()),
+			)
+		}
 	}
 }
