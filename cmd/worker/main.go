@@ -28,7 +28,7 @@ func main() {
 
 	db := database.NewDatabase(cfg.DATABASE_URL)
 	if err := database.Up(db, "database/migrations"); err != nil {
-		slog.Error("migrations failed: %v",
+		slog.Error("migrations failed",
 			slog.String("error", err.Error()),
 		)
 		os.Exit(1)
@@ -39,7 +39,7 @@ func main() {
 	paymentPrv := provider.NewMockProvider()
 	rabbit, err := queue.New(cfg.RABBITMQ_URL)
 	if err != nil {
-		slog.Error("queue init failed: %v",
+		slog.Error("queue init failed",
 			slog.String("error", err.Error()),
 		)
 		os.Exit(1)
@@ -55,7 +55,7 @@ func main() {
 	})
 
 	if err != nil {
-		slog.Error("Consumer failed: %v",
+		slog.Error("consumer failed",
 			slog.String("error", err.Error()),
 		)
 		os.Exit(1)

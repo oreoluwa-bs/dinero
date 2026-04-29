@@ -91,16 +91,17 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	)
 
 	if pm.Status == "processing" {
-		s.logger.Warn("payment still processing, skipping duplicate event",
+		if pm.ProcessingStartedAt.Valid && !isLeaseExpired(pm.ProcessingStartedAt.String) {
+			s.logger.Info("payment still within processing lease, skipping",
+				slog.String("idempotency_key", idemKey),
+				slog.String("reference", pm.Reference),
+			)
+			return nil
+		}
+		s.logger.Warn("processing lease expired, treating as retryable",
 			slog.String("idempotency_key", idemKey),
 			slog.String("reference", pm.Reference),
 		)
-
-		if pm.ProcessingStartedAt.Valid && !isLeaseExpired(pm.ProcessingStartedAt.String) {
-			s.logger.Info("payment still within processing lease, skipping")
-			return nil
-		}
-		s.logger.Warn("processing lease expired, treating as retryable")
 	}
 
 	if pm.Status == "completed" {
@@ -145,6 +146,15 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		slog.Int64("attempts", pm.Attempts+1),
 	)
 
+	// This prevents double-charge because the provider call is not inside a rollbackable transaction.
+	if err := tx.Commit(); err != nil {
+		s.logger.Error("failed to commit processing lease",
+			slog.String("idempotency_key", idemKey),
+			slog.String("error", err.Error()),
+		)
+		return err
+	}
+
 	err = s.provider.Charge(ctx, provider.CreateCharge{
 		Amount:    pm.Amount,
 		Currency:  pm.Currency,
@@ -152,7 +162,7 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	})
 	if err != nil {
 		retyAt := time.Now().UTC().Add(time.Minute * time.Duration(pm.Attempts))
-		lerr := qtx.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
+		updateErr := s.store.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
 			Status:   "failed",
 			Attempts: pm.Attempts + 1,
 			IdempotencyKey: sql.NullString{
@@ -166,12 +176,12 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 			ProcessingStartedAt: sql.NullString{},
 		})
 
-		if lerr != nil {
+		if updateErr != nil {
 			s.logger.Error("failed to update payment status to failed",
 				slog.String("idempotency_key", idemKey),
-				slog.String("error", lerr.Error()),
+				slog.String("error", updateErr.Error()),
 			)
-			return lerr
+			return updateErr
 		}
 
 		if pm.Attempts+1 >= MAX_ATTEMPTS {
@@ -191,11 +201,10 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 			)
 		}
 
-		tx.Commit()
 		return nil
 	}
 
-	err = qtx.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
+	err = s.store.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
 		Status:              "completed",
 		Attempts:            pm.Attempts + 1,
 		ProcessingStartedAt: sql.NullString{},
@@ -218,7 +227,6 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		slog.Int64("attempts", pm.Attempts+1),
 	)
 
-	tx.Commit()
 	return nil
 }
 

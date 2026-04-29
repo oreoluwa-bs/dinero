@@ -29,7 +29,7 @@ func main() {
 
 	db := database.NewDatabase(cfg.DATABASE_URL)
 	if err := database.Up(db, "database/migrations"); err != nil {
-		slog.Error("migrations failed: %v", slog.String("error", err.Error()))
+		slog.Error("migrations failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 	defer db.Close()
@@ -38,7 +38,7 @@ func main() {
 	paymentPrv := provider.NewMockProvider()
 	qu, err := queue.New(cfg.RABBITMQ_URL)
 	if err != nil {
-		slog.Error("queue init failed: %v", slog.String("error", err.Error()))
+		slog.Error("queue init failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
@@ -64,11 +64,4 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", slog.String("error", err.Error()))
 	}
-}
-
-func getEnv(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
 }
