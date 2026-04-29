@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -30,7 +29,8 @@ func main() {
 
 	db := database.NewDatabase(cfg.DATABASE_URL)
 	if err := database.Up(db, "database/migrations"); err != nil {
-		log.Fatalf("migrations failed: %v", err)
+		slog.Error("migrations failed: %v", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 	defer db.Close()
 
@@ -38,7 +38,8 @@ func main() {
 	paymentPrv := provider.NewMockProvider()
 	qu, err := queue.New(cfg.RABBITMQ_URL)
 	if err != nil {
-		log.Fatalf("queue init failed: %v", err)
+		slog.Error("queue init failed: %v", slog.String("error", err.Error()))
+		os.Exit(1)
 	}
 
 	apiServer := server.NewServer(paymentPrv, *store, qu, logger)
