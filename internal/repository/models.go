@@ -9,13 +9,14 @@ import (
 )
 
 type Payment struct {
-	ID             int64
-	Amount         int64
-	Currency       string
-	Reference      string
-	Status         string
-	CreatedAt      string
-	IdempotencyKey sql.NullString
-	NextRetryAt    sql.NullString
-	Attempts       int64
+	ID                  int64
+	Amount              int64
+	Currency            string
+	Reference           string
+	Status              string
+	CreatedAt           string
+	IdempotencyKey      sql.NullString
+	NextRetryAt         sql.NullString
+	Attempts            int64
+	ProcessingStartedAt sql.NullString
 }

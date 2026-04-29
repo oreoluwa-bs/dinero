@@ -8,6 +8,7 @@ SELECT
     status,
     attempts,
     next_retry_at,
+    processing_started_at,
     created_at
 FROM payments
 WHERE reference = ? LIMIT 1;
@@ -21,6 +22,7 @@ SELECT
     status,
     attempts,
     next_retry_at,
+    processing_started_at,
     created_at
 FROM payments
 WHERE idempotency_key = ? LIMIT 1;
@@ -45,6 +47,16 @@ LIMIT 50;
 -- name: UpdatePaymentStatus :exec
 UPDATE payments
 SET status = ?,
-attempts = ?,
-next_retry_at = ?
+    attempts = ?,
+    next_retry_at = ?,
+    processing_started_at = ?
 WHERE idempotency_key = ?;
+
+
+-- name: ResetStaleProcessingPayments :execrows
+UPDATE payments
+SET status = 'failed',
+    next_retry_at = datetime('now', '+1 minute')
+WHERE status = 'processing'
+  AND processing_started_at IS NOT NULL
+  AND datetime(processing_started_at) <= datetime('now', '-2 minutes');

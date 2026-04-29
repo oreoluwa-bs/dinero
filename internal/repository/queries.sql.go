@@ -105,20 +105,22 @@ SELECT
     status,
     attempts,
     next_retry_at,
+    processing_started_at,
     created_at
 FROM payments
 WHERE idempotency_key = ? LIMIT 1
 `
 
 type GetPaymentByIdempotencyRow struct {
-	Amount         int64
-	Currency       string
-	IdempotencyKey sql.NullString
-	Reference      string
-	Status         string
-	Attempts       int64
-	NextRetryAt    sql.NullString
-	CreatedAt      string
+	Amount              int64
+	Currency            string
+	IdempotencyKey      sql.NullString
+	Reference           string
+	Status              string
+	Attempts            int64
+	NextRetryAt         sql.NullString
+	ProcessingStartedAt sql.NullString
+	CreatedAt           string
 }
 
 func (q *Queries) GetPaymentByIdempotency(ctx context.Context, idempotencyKey sql.NullString) (GetPaymentByIdempotencyRow, error) {
@@ -132,6 +134,7 @@ func (q *Queries) GetPaymentByIdempotency(ctx context.Context, idempotencyKey sq
 		&i.Status,
 		&i.Attempts,
 		&i.NextRetryAt,
+		&i.ProcessingStartedAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -147,21 +150,23 @@ SELECT
     status,
     attempts,
     next_retry_at,
+    processing_started_at,
     created_at
 FROM payments
 WHERE reference = ? LIMIT 1
 `
 
 type GetPaymentByReferenceRow struct {
-	ID             int64
-	Amount         int64
-	Currency       string
-	IdempotencyKey sql.NullString
-	Reference      string
-	Status         string
-	Attempts       int64
-	NextRetryAt    sql.NullString
-	CreatedAt      string
+	ID                  int64
+	Amount              int64
+	Currency            string
+	IdempotencyKey      sql.NullString
+	Reference           string
+	Status              string
+	Attempts            int64
+	NextRetryAt         sql.NullString
+	ProcessingStartedAt sql.NullString
+	CreatedAt           string
 }
 
 func (q *Queries) GetPaymentByReference(ctx context.Context, reference string) (GetPaymentByReferenceRow, error) {
@@ -176,24 +181,44 @@ func (q *Queries) GetPaymentByReference(ctx context.Context, reference string) (
 		&i.Status,
 		&i.Attempts,
 		&i.NextRetryAt,
+		&i.ProcessingStartedAt,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
+const resetStaleProcessingPayments = `-- name: ResetStaleProcessingPayments :execrows
+UPDATE payments
+SET status = 'failed',
+    next_retry_at = datetime('now', '+1 minute')
+WHERE status = 'processing'
+  AND processing_started_at IS NOT NULL
+  AND datetime(processing_started_at) <= datetime('now', '-2 minutes')
+`
+
+func (q *Queries) ResetStaleProcessingPayments(ctx context.Context) (int64, error) {
+	result, err := q.db.ExecContext(ctx, resetStaleProcessingPayments)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const updatePaymentStatus = `-- name: UpdatePaymentStatus :exec
 UPDATE payments
 SET status = ?,
-attempts = ?,
-next_retry_at = ?
+    attempts = ?,
+    next_retry_at = ?,
+    processing_started_at = ?
 WHERE idempotency_key = ?
 `
 
 type UpdatePaymentStatusParams struct {
-	Status         string
-	Attempts       int64
-	NextRetryAt    sql.NullString
-	IdempotencyKey sql.NullString
+	Status              string
+	Attempts            int64
+	NextRetryAt         sql.NullString
+	ProcessingStartedAt sql.NullString
+	IdempotencyKey      sql.NullString
 }
 
 func (q *Queries) UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStatusParams) error {
@@ -201,6 +226,7 @@ func (q *Queries) UpdatePaymentStatus(ctx context.Context, arg UpdatePaymentStat
 		arg.Status,
 		arg.Attempts,
 		arg.NextRetryAt,
+		arg.ProcessingStartedAt,
 		arg.IdempotencyKey,
 	)
 	return err

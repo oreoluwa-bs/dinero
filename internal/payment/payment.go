@@ -16,6 +16,8 @@ type Publisher interface {
 	Publish(ctx context.Context, exchange, routingKey string, body []byte) error
 }
 
+const MAX_ATTEMPTS = 5
+
 type Service struct {
 	store    repository.Queries
 	provider provider.Provider
@@ -93,8 +95,14 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 			slog.String("idempotency_key", idemKey),
 			slog.String("reference", pm.Reference),
 		)
-		return nil
+
+		if pm.ProcessingStartedAt.Valid && !isLeaseExpired(pm.ProcessingStartedAt.String) {
+			s.logger.Info("payment still within processing lease, skipping")
+			return nil
+		}
+		s.logger.Warn("processing lease expired, treating as retryable")
 	}
+
 	if pm.Status == "completed" {
 		s.logger.Info("payment already completed, skipping",
 			slog.String("idempotency_key", idemKey),
@@ -102,7 +110,7 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		)
 		return nil
 	}
-	if pm.Status == "failed" && pm.Attempts > 3 {
+	if pm.Status == "failed" && pm.Attempts >= MAX_ATTEMPTS {
 		s.logger.Info("payment terminally failed, skipping",
 			slog.String("idempotency_key", idemKey),
 			slog.String("reference", pm.Reference),
@@ -114,6 +122,10 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	err = qtx.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
 		Status:   "processing",
 		Attempts: pm.Attempts + 1,
+		ProcessingStartedAt: sql.NullString{
+			String: time.Now().UTC().Format("2006-01-02 15:04:05"),
+			Valid:  true,
+		},
 		IdempotencyKey: sql.NullString{
 			String: idemKey,
 			Valid:  idemKey != "",
@@ -151,6 +163,7 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 				String: retyAt.Format("2006-01-02 15:04:05"),
 				Valid:  !retyAt.IsZero(),
 			},
+			ProcessingStartedAt: sql.NullString{},
 		})
 
 		if lerr != nil {
@@ -161,7 +174,7 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 			return lerr
 		}
 
-		if pm.Attempts+1 > 3 {
+		if pm.Attempts+1 >= MAX_ATTEMPTS {
 			s.logger.Error("payment terminally failed after max retries",
 				slog.String("idempotency_key", idemKey),
 				slog.String("reference", pm.Reference),
@@ -183,8 +196,9 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	}
 
 	err = qtx.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
-		Status:   "completed",
-		Attempts: pm.Attempts + 1,
+		Status:              "completed",
+		Attempts:            pm.Attempts + 1,
+		ProcessingStartedAt: sql.NullString{},
 		IdempotencyKey: sql.NullString{
 			String: idemKey,
 			Valid:  idemKey != "",
@@ -255,4 +269,43 @@ func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
 			)
 		}
 	}
+}
+
+func (s Service) StartProcessingSweeper(ctx context.Context, interval time.Duration) {
+	// ticker goroutine, runs ResetStaleProcessingPayments
+	// logs how many rows were reset
+	s.logger.Info("processing payment sweeper started", slog.Duration("interval", interval))
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				s.logger.Info("processing payment sweeper shutting down")
+				return
+			case <-ticker.C:
+				s.resetStaleProcessingPayments(ctx)
+			}
+		}
+	}()
+}
+
+func (s Service) resetStaleProcessingPayments(ctx context.Context) {
+	rows, err := s.store.ResetStaleProcessingPayments(ctx)
+	if err != nil {
+		s.logger.Error("failed to reset stale processing payments", slog.String("error", err.Error()))
+		return
+	}
+
+	s.logger.Info("reset stale processing payments",
+		slog.Int64("rows", rows))
+
+}
+
+func isLeaseExpired(ts string) bool {
+	t, err := time.Parse("2006-01-02 15:04:05", ts)
+	if err != nil {
+		return true // malformed = expired
+	}
+	return time.Since(t) > 2*time.Minute
 }
