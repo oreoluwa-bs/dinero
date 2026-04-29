@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/oreoluwa-bs/dinero/internal/provider"
@@ -19,12 +20,14 @@ type Service struct {
 	store    repository.Queries
 	provider provider.Provider
 	db       *sql.DB
+	logger   *slog.Logger
 }
 
 func NewService(
 	store repository.Queries,
 	provider provider.Provider,
 	db *sql.DB,
+	logger *slog.Logger,
 ) *Service {
 	return &Service{
 		store:    store,
