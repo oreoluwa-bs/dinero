@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"time"
 
@@ -49,14 +48,14 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	var val map[string]interface{}
 	err := json.Unmarshal(payload, &val)
 	if err != nil {
-		s.logger.Error("failed to unmarshal payment event", slog.String("error", err.Error()))
-		return err
+		s.logger.Error("failed to unmarshal payment event, dropping poison message", slog.String("error", err.Error()))
+		return nil // Ack — don't requeue unrecoverable errors
 	}
 
 	idemKey, ok := val["payment_idempotency_key"].(string)
 	if !ok {
-		s.logger.Error("missing idempotency key in payment event payload")
-		return errors.New("missing idempotency key in payload")
+		s.logger.Error("missing idempotency key in payment event payload, dropping poison message")
+		return nil // Ack — don't requeue unrecoverable errors
 	}
 
 	ref, _ := val["payment_reference"].(string)

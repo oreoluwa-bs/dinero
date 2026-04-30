@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -56,9 +57,28 @@ func main() {
 	paymentSvc.StartProcessingSweeper(ctx, 5*time.Second)
 
 	go func() {
-		http.Handle("/metrics", metrics.HandlerFor(reg))
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", metrics.HandlerFor(reg))
+		mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"status": "alive"})
+		})
+		mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+
+			if err := db.PingContext(ctx); err != nil {
+				slog.Error("worker readiness check failed", slog.String("error", err.Error()))
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(map[string]string{"status": "not ready", "reason": "database unavailable"})
+				return
+			}
+
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+		})
 		slog.Info("worker metrics server listening", slog.String("port", "2112"))
-		if err := http.ListenAndServe(":2112", nil); err != nil {
+		if err := http.ListenAndServe(":2112", mux); err != nil {
 			slog.Error("metrics server error", slog.String("error", err.Error()))
 		}
 	}()

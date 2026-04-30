@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"sync"
 	"time"
 )
 
@@ -20,13 +21,25 @@ type Provider interface {
 var TimeoutError = errors.New("Timeout Error")
 var NetworkError = errors.New("Network Error")
 
-type MockProvider struct{}
-
-func NewMockProvider() *MockProvider {
-	return &MockProvider{}
+type MockProvider struct {
+	mu        sync.Mutex
+	callCount map[string]int
 }
 
-func (p MockProvider) Charge(ctx context.Context, req CreateCharge) error {
+func NewMockProvider() *MockProvider {
+	return &MockProvider{
+		callCount: make(map[string]int),
+	}
+}
+
+func (p *MockProvider) Charge(ctx context.Context, req CreateCharge) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if req.Reference != "" {
+		p.callCount[req.Reference]++
+	}
+
 	max := 500
 	min := 50
 	delay := time.Duration(rand.IntN(max-min)+min) * time.Millisecond
@@ -42,4 +55,16 @@ func (p MockProvider) Charge(ctx context.Context, req CreateCharge) error {
 	}
 
 	return nil
+}
+
+func (p *MockProvider) ChargeCount(reference string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.callCount[reference]
+}
+
+func (p *MockProvider) Reset() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.callCount = make(map[string]int)
 }

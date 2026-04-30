@@ -46,7 +46,7 @@ func main() {
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
 
-	apiServer := server.NewServer(paymentPrv, *store, qu, logger, reg, mtr)
+	apiServer := server.NewServer(paymentPrv, *store, db, qu, logger, reg, mtr)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.PORT,

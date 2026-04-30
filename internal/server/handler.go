@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
@@ -157,4 +158,21 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		Data:    c,
 		Message: "Charge accepted",
 	})
+}
+
+func (s Server) health(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, ApiResponse{Message: "alive"})
+}
+
+func (s Server) ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := s.db.PingContext(ctx); err != nil {
+		s.logger.Error("readiness check failed", slog.String("error", err.Error()))
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ApiResponse{Message: "ready"})
 }

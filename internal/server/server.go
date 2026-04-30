@@ -1,6 +1,7 @@
 package server
 
 import (
+	"database/sql"
 	"log/slog"
 	"net/http"
 
@@ -16,16 +17,18 @@ import (
 type Server struct {
 	paymentProvider provider.Provider
 	store           repository.Queries
+	db              *sql.DB
 	publisher       queue.Publisher
 	logger          *slog.Logger
 	registry        *prometheus.Registry
 	metrics         *metrics.Metrics
 }
 
-func NewServer(prov provider.Provider, store repository.Queries, publisher queue.Publisher, logger *slog.Logger, registry *prometheus.Registry, mtr *metrics.Metrics) *Server {
+func NewServer(prov provider.Provider, store repository.Queries, db *sql.DB, publisher queue.Publisher, logger *slog.Logger, registry *prometheus.Registry, mtr *metrics.Metrics) *Server {
 	return &Server{
 		paymentProvider: prov,
 		store:           store,
+		db:              db,
 		publisher:       publisher,
 		logger:          logger,
 		registry:        registry,
@@ -39,6 +42,8 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	r.Get("/metrics", metrics.HandlerFor(s.registry).ServeHTTP)
+	r.Get("/health", s.health)
+	r.Get("/ready", s.ready)
 
 	r.Route("/charges", func(r chi.Router) {
 		r.Post("/", s.createCharge)
