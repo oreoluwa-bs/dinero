@@ -119,6 +119,10 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		slog.String("status", c.Status),
 	)
 
+	if s.metrics != nil {
+		s.metrics.PaymentsTotal.WithLabelValues("pending").Inc()
+	}
+
 	payload, err := json.Marshal(map[string]string{"payment_idempotency_key": c.IdempotencyKey.String,
 		"payment_reference": c.Reference, "status": "created"})
 	if err != nil {
@@ -126,17 +130,26 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 			slog.String("reference", c.Reference),
 			slog.String("error", err.Error()),
 		)
+		if s.metrics != nil {
+			s.metrics.QueueMessages.WithLabelValues("publish", "error").Inc()
+		}
 	} else {
 		if pubErr := s.publisher.Publish(context.Background(), "", "payments.queue", payload); pubErr != nil {
 			s.logger.Error("failed to publish to queue",
 				slog.String("reference", c.Reference),
 				slog.String("error", pubErr.Error()),
 			)
+			if s.metrics != nil {
+				s.metrics.QueueMessages.WithLabelValues("publish", "error").Inc()
+			}
 		} else {
 			s.logger.Info("payment published to queue",
 				slog.String("reference", c.Reference),
 				slog.String("queue", "payments.queue"),
 			)
+			if s.metrics != nil {
+				s.metrics.QueueMessages.WithLabelValues("publish", "success").Inc()
+			}
 		}
 	}
 

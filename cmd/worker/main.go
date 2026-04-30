@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 	"github.com/oreoluwa-bs/dinero/database"
 	"github.com/oreoluwa-bs/dinero/internal/config"
 	"github.com/oreoluwa-bs/dinero/internal/logger"
+	"github.com/oreoluwa-bs/dinero/internal/metrics"
 	"github.com/oreoluwa-bs/dinero/internal/payment"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/queue"
@@ -45,10 +47,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	paymentSvc := payment.NewService(*store, paymentPrv, db, lg)
+	reg := metrics.NewRegistry()
+	mtr := metrics.NewMetrics(reg)
+
+	paymentSvc := payment.NewService(*store, paymentPrv, db, lg, mtr)
 
 	paymentSvc.StartRetryPoller(ctx, rabbit, 5*time.Second)
 	paymentSvc.StartProcessingSweeper(ctx, 5*time.Second)
+
+	go func() {
+		http.Handle("/metrics", metrics.HandlerFor(reg))
+		slog.Info("worker metrics server listening", slog.String("port", "2112"))
+		if err := http.ListenAndServe(":2112", nil); err != nil {
+			slog.Error("metrics server error", slog.String("error", err.Error()))
+		}
+	}()
 
 	err = rabbit.Start(ctx, "payments.queue", func(ctx context.Context, body []byte) error {
 		return paymentSvc.HandlePaymentEvent(ctx, body)

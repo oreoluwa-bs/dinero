@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/oreoluwa-bs/dinero/internal/metrics"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
 )
@@ -23,6 +24,7 @@ type Service struct {
 	provider provider.Provider
 	db       *sql.DB
 	logger   *slog.Logger
+	metrics  *metrics.Metrics
 }
 
 func NewService(
@@ -30,16 +32,20 @@ func NewService(
 	provider provider.Provider,
 	db *sql.DB,
 	logger *slog.Logger,
+	mtr *metrics.Metrics,
 ) *Service {
 	return &Service{
 		store:    store,
 		provider: provider,
 		db:       db,
 		logger:   logger,
+		metrics:  mtr,
 	}
 }
 
 func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
+	start := time.Now()
+
 	var val map[string]interface{}
 	err := json.Unmarshal(payload, &val)
 	if err != nil {
@@ -155,12 +161,26 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		return err
 	}
 
+	if s.metrics != nil {
+		s.metrics.ActiveProcessing.Inc()
+	}
+
+	providerStart := time.Now()
 	err = s.provider.Charge(ctx, provider.CreateCharge{
 		Amount:    pm.Amount,
 		Currency:  pm.Currency,
 		Reference: pm.Reference,
 	})
+	if s.metrics != nil {
+		s.metrics.ProviderDuration.Observe(time.Since(providerStart).Seconds())
+	}
+
 	if err != nil {
+		if s.metrics != nil {
+			s.metrics.ProviderCalls.WithLabelValues("error").Inc()
+			s.metrics.ActiveProcessing.Dec()
+		}
+
 		retyAt := time.Now().UTC().Add(time.Minute * time.Duration(pm.Attempts))
 		updateErr := s.store.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
 			Status:   "failed",
@@ -191,6 +211,9 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 				slog.Int64("attempts", pm.Attempts+1),
 				slog.String("last_error", err.Error()),
 			)
+			if s.metrics != nil {
+				s.metrics.PaymentsTotal.WithLabelValues("terminal").Inc()
+			}
 		} else {
 			s.logger.Warn("provider charge failed, retry scheduled",
 				slog.String("idempotency_key", idemKey),
@@ -199,9 +222,20 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 				slog.String("next_retry_at", retyAt.Format(time.RFC3339)),
 				slog.String("error", err.Error()),
 			)
+			if s.metrics != nil {
+				s.metrics.PaymentsTotal.WithLabelValues("failed").Inc()
+			}
 		}
 
+		if s.metrics != nil {
+			s.metrics.ProcessingDuration.Observe(time.Since(start).Seconds())
+		}
 		return nil
+	}
+
+	if s.metrics != nil {
+		s.metrics.ProviderCalls.WithLabelValues("success").Inc()
+		s.metrics.ActiveProcessing.Dec()
 	}
 
 	err = s.store.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
@@ -226,6 +260,11 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		slog.String("reference", pm.Reference),
 		slog.Int64("attempts", pm.Attempts+1),
 	)
+
+	if s.metrics != nil {
+		s.metrics.PaymentsTotal.WithLabelValues("completed").Inc()
+		s.metrics.ProcessingDuration.Observe(time.Since(start).Seconds())
+	}
 
 	return nil
 }
@@ -258,6 +297,9 @@ func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
 	}
 
 	s.logger.Info("retrying failed payments", slog.Int("count", len(payments)))
+	if s.metrics != nil {
+		s.metrics.PendingRetry.Set(float64(len(payments)))
+	}
 
 	for _, p := range payments {
 		payload, _ := json.Marshal(map[string]string{
@@ -269,6 +311,9 @@ func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
 			slog.String("idempotency_key", p.IdempotencyKey.String),
 			slog.String("reference", p.Reference),
 		)
+		if s.metrics != nil {
+			s.metrics.PaymentsRetried.Inc()
+		}
 		if err := publisher.Publish(ctx, "", "payments.queue", payload); err != nil {
 			s.logger.Error("failed to republish payment for retry",
 				slog.String("idempotency_key", p.IdempotencyKey.String),
@@ -305,9 +350,13 @@ func (s Service) resetStaleProcessingPayments(ctx context.Context) {
 		return
 	}
 
-	s.logger.Info("reset stale processing payments",
-		slog.Int64("rows", rows))
-
+	if rows > 0 {
+		s.logger.Info("reset stale processing payments",
+			slog.Int64("rows", rows))
+		if s.metrics != nil {
+			s.metrics.SweeperResets.Add(float64(rows))
+		}
+	}
 }
 
 func isLeaseExpired(ts string) bool {

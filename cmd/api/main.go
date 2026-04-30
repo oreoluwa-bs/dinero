@@ -12,6 +12,7 @@ import (
 	"github.com/oreoluwa-bs/dinero/database"
 	"github.com/oreoluwa-bs/dinero/internal/config"
 	"github.com/oreoluwa-bs/dinero/internal/logger"
+	"github.com/oreoluwa-bs/dinero/internal/metrics"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/queue"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
@@ -42,7 +43,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	apiServer := server.NewServer(paymentPrv, *store, qu, logger)
+	reg := metrics.NewRegistry()
+	mtr := metrics.NewMetrics(reg)
+
+	apiServer := server.NewServer(paymentPrv, *store, qu, logger, reg, mtr)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.PORT,
