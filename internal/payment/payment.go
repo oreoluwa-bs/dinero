@@ -7,11 +7,12 @@ import (
 	"log/slog"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
+	applog "github.com/oreoluwa-bs/dinero/internal/logger"
 	"github.com/oreoluwa-bs/dinero/internal/metrics"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Publisher interface {
@@ -47,25 +48,30 @@ func NewService(
 	}
 }
 
+func (s Service) log(ctx context.Context) *slog.Logger {
+	return applog.WithTrace(ctx, s.logger)
+}
+
 func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	tracer := s.tracer
 	ctx, span := tracer.Start(ctx, "payment.HandlePaymentEvent")
 	defer span.End()
+	lg := s.log(ctx)
 
 	start := time.Now()
 
 	var val map[string]interface{}
 	err := json.Unmarshal(payload, &val)
 	if err != nil {
-		s.logger.Error("failed to unmarshal payment event, dropping poison message", slog.String("error", err.Error()))
+		lg.Error("failed to unmarshal payment event, dropping poison message", "error", err.Error())
 		span.RecordError(err)
-		return nil // Ack — don't requeue unrecoverable errors
+		return nil
 	}
 
 	idemKey, ok := val["payment_idempotency_key"].(string)
 	if !ok {
-		s.logger.Error("missing idempotency key in payment event payload, dropping poison message")
-		return nil // Ack — don't requeue unrecoverable errors
+		lg.Error("missing idempotency key in payment event payload, dropping poison message")
+		return nil
 	}
 
 	ref, _ := val["payment_reference"].(string)
@@ -75,16 +81,16 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		attribute.String("payment.reference", ref),
 	)
 
-	s.logger.Info("payment event received",
-		slog.String("idempotency_key", idemKey),
-		slog.String("reference", ref),
+	lg.Info("payment event received",
+		"idempotency_key", idemKey,
+		"reference", ref,
 	)
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		s.logger.Error("failed to begin transaction",
-			slog.String("idempotency_key", idemKey),
-			slog.String("error", err.Error()),
+		lg.Error("failed to begin transaction",
+			"idempotency_key", idemKey,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		return err
@@ -99,9 +105,9 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	})
 	dbSpan.End()
 	if err != nil {
-		s.logger.Error("failed to get payment by idempotency",
-			slog.String("idempotency_key", idemKey),
-			slog.String("error", err.Error()),
+		lg.Error("failed to get payment by idempotency",
+			"idempotency_key", idemKey,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		return err
@@ -112,39 +118,39 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		attribute.Int64("payment.attempts", pm.Attempts),
 	)
 
-	s.logger.Info("payment state resolved",
-		slog.String("idempotency_key", idemKey),
-		slog.String("reference", pm.Reference),
-		slog.String("status", pm.Status),
-		slog.Int64("attempts", pm.Attempts),
+	lg.Info("payment state resolved",
+		"idempotency_key", idemKey,
+		"reference", pm.Reference,
+		"status", pm.Status,
+		"attempts", pm.Attempts,
 	)
 
 	if pm.Status == "processing" {
 		if pm.ProcessingStartedAt.Valid && !isLeaseExpired(pm.ProcessingStartedAt.String) {
-			s.logger.Info("payment still within processing lease, skipping",
-				slog.String("idempotency_key", idemKey),
-				slog.String("reference", pm.Reference),
+			lg.Info("payment still within processing lease, skipping",
+				"idempotency_key", idemKey,
+				"reference", pm.Reference,
 			)
 			return nil
 		}
-		s.logger.Warn("processing lease expired, treating as retryable",
-			slog.String("idempotency_key", idemKey),
-			slog.String("reference", pm.Reference),
+		lg.Warn("processing lease expired, treating as retryable",
+			"idempotency_key", idemKey,
+			"reference", pm.Reference,
 		)
 	}
 
 	if pm.Status == "completed" {
-		s.logger.Info("payment already completed, skipping",
-			slog.String("idempotency_key", idemKey),
-			slog.String("reference", pm.Reference),
+		lg.Info("payment already completed, skipping",
+			"idempotency_key", idemKey,
+			"reference", pm.Reference,
 		)
 		return nil
 	}
 	if pm.Status == "failed" && pm.Attempts >= MAX_ATTEMPTS {
-		s.logger.Info("payment terminally failed, skipping",
-			slog.String("idempotency_key", idemKey),
-			slog.String("reference", pm.Reference),
-			slog.Int64("attempts", pm.Attempts),
+		lg.Info("payment terminally failed, skipping",
+			"idempotency_key", idemKey,
+			"reference", pm.Reference,
+			"attempts", pm.Attempts,
 		)
 		return nil
 	}
@@ -165,28 +171,27 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	})
 	updateSpan.End()
 	if err != nil {
-		s.logger.Error("failed to update payment status to processing",
-			slog.String("idempotency_key", idemKey),
-			slog.String("error", err.Error()),
+		lg.Error("failed to update payment status to processing",
+			"idempotency_key", idemKey,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		return err
 	}
 
-	s.logger.Info("payment transitioned to processing",
-		slog.String("idempotency_key", idemKey),
-		slog.String("reference", pm.Reference),
-		slog.Int64("attempts", pm.Attempts+1),
+	lg.Info("payment transitioned to processing",
+		"idempotency_key", idemKey,
+		"reference", pm.Reference,
+		"attempts", pm.Attempts+1,
 	)
 
-	// This prevents double-charge because the provider call is not inside a rollbackable transaction.
 	_, commitSpan := tracer.Start(ctx, "db.commit")
 	err = tx.Commit()
 	commitSpan.End()
 	if err != nil {
-		s.logger.Error("failed to commit processing lease",
-			slog.String("idempotency_key", idemKey),
-			slog.String("error", err.Error()),
+		lg.Error("failed to commit processing lease",
+			"idempotency_key", idemKey,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		return err
@@ -241,31 +246,31 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		failSpan.End()
 
 		if updateErr != nil {
-			s.logger.Error("failed to update payment status to failed",
-				slog.String("idempotency_key", idemKey),
-				slog.String("error", updateErr.Error()),
+			lg.Error("failed to update payment status to failed",
+				"idempotency_key", idemKey,
+				"error", updateErr.Error(),
 			)
 			span.RecordError(updateErr)
 			return updateErr
 		}
 
 		if pm.Attempts+1 >= MAX_ATTEMPTS {
-			s.logger.Error("payment terminally failed after max retries",
-				slog.String("idempotency_key", idemKey),
-				slog.String("reference", pm.Reference),
-				slog.Int64("attempts", pm.Attempts+1),
-				slog.String("last_error", err.Error()),
+			lg.Error("payment terminally failed after max retries",
+				"idempotency_key", idemKey,
+				"reference", pm.Reference,
+				"attempts", pm.Attempts+1,
+				"last_error", err.Error(),
 			)
 			if s.metrics != nil {
 				s.metrics.PaymentsTotal.WithLabelValues("terminal").Inc()
 			}
 		} else {
-			s.logger.Warn("provider charge failed, retry scheduled",
-				slog.String("idempotency_key", idemKey),
-				slog.String("reference", pm.Reference),
-				slog.Int64("attempts", pm.Attempts+1),
-				slog.String("next_retry_at", retyAt.Format(time.RFC3339)),
-				slog.String("error", err.Error()),
+			lg.Warn("provider charge failed, retry scheduled",
+				"idempotency_key", idemKey,
+				"reference", pm.Reference,
+				"attempts", pm.Attempts+1,
+				"next_retry_at", retyAt.Format(time.RFC3339),
+				"error", err.Error(),
 			)
 			if s.metrics != nil {
 				s.metrics.PaymentsTotal.WithLabelValues("failed").Inc()
@@ -296,18 +301,18 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	})
 	completeSpan.End()
 	if err != nil {
-		s.logger.Error("failed to update payment status to completed",
-			slog.String("idempotency_key", idemKey),
-			slog.String("error", err.Error()),
+		lg.Error("failed to update payment status to completed",
+			"idempotency_key", idemKey,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		return err
 	}
 
-	s.logger.Info("payment completed",
-		slog.String("idempotency_key", idemKey),
-		slog.String("reference", pm.Reference),
-		slog.Int64("attempts", pm.Attempts+1),
+	lg.Info("payment completed",
+		"idempotency_key", idemKey,
+		"reference", pm.Reference,
+		"attempts", pm.Attempts+1,
 	)
 
 	if s.metrics != nil {
@@ -319,7 +324,7 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 }
 
 func (s Service) StartRetryPoller(ctx context.Context, publisher Publisher, interval time.Duration) {
-	s.logger.Info("retry poller started", slog.Duration("interval", interval))
+	s.logger.Info("retry poller started", "interval", interval)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -339,10 +344,11 @@ func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
 	tracer := s.tracer
 	ctx, span := tracer.Start(ctx, "payment.retryFailedPayments")
 	defer span.End()
+	lg := s.log(ctx)
 
 	payments, err := s.store.GetFailedPaymentsForRetry(ctx)
 	if err != nil {
-		s.logger.Error("failed to fetch payments for retry", slog.String("error", err.Error()))
+		lg.Error("failed to fetch payments for retry", "error", err.Error())
 		span.RecordError(err)
 		return
 	}
@@ -351,7 +357,7 @@ func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
 	}
 
 	span.SetAttributes(attribute.Int("payment.retry_count", len(payments)))
-	s.logger.Info("retrying failed payments", slog.Int("count", len(payments)))
+	lg.Info("retrying failed payments", "count", len(payments))
 	if s.metrics != nil {
 		s.metrics.PendingRetry.Set(float64(len(payments)))
 	}
@@ -362,27 +368,25 @@ func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
 			"payment_reference":       p.Reference,
 			"status":                  "created",
 		})
-		s.logger.Info("republishing payment for retry",
-			slog.String("idempotency_key", p.IdempotencyKey.String),
-			slog.String("reference", p.Reference),
+		lg.Info("republishing payment for retry",
+			"idempotency_key", p.IdempotencyKey.String,
+			"reference", p.Reference,
 		)
 		if s.metrics != nil {
 			s.metrics.PaymentsRetried.Inc()
 		}
 		if err := publisher.Publish(ctx, "", "payments.queue", payload); err != nil {
-			s.logger.Error("failed to republish payment for retry",
-				slog.String("idempotency_key", p.IdempotencyKey.String),
-				slog.String("reference", p.Reference),
-				slog.String("error", err.Error()),
+			lg.Error("failed to republish payment for retry",
+				"idempotency_key", p.IdempotencyKey.String,
+				"reference", p.Reference,
+				"error", err.Error(),
 			)
 		}
 	}
 }
 
 func (s Service) StartProcessingSweeper(ctx context.Context, interval time.Duration) {
-	// ticker goroutine, runs ResetStaleProcessingPayments
-	// logs how many rows were reset
-	s.logger.Info("processing payment sweeper started", slog.Duration("interval", interval))
+	s.logger.Info("processing payment sweeper started", "interval", interval)
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -402,18 +406,18 @@ func (s Service) resetStaleProcessingPayments(ctx context.Context) {
 	tracer := s.tracer
 	ctx, span := tracer.Start(ctx, "payment.resetStaleProcessingPayments")
 	defer span.End()
+	lg := s.log(ctx)
 
 	rows, err := s.store.ResetStaleProcessingPayments(ctx)
 	if err != nil {
-		s.logger.Error("failed to reset stale processing payments", slog.String("error", err.Error()))
+		lg.Error("failed to reset stale processing payments", "error", err.Error())
 		span.RecordError(err)
 		return
 	}
 
 	if rows > 0 {
 		span.SetAttributes(attribute.Int64("sweeper.rows_reset", rows))
-		s.logger.Info("reset stale processing payments",
-			slog.Int64("rows", rows))
+		lg.Info("reset stale processing payments", "rows", rows)
 		if s.metrics != nil {
 			s.metrics.SweeperResets.Add(float64(rows))
 		}
@@ -423,7 +427,7 @@ func (s Service) resetStaleProcessingPayments(ctx context.Context) {
 func isLeaseExpired(ts string) bool {
 	t, err := time.Parse("2006-01-02 15:04:05", ts)
 	if err != nil {
-		return true // malformed = expired
+		return true
 	}
 	return time.Since(t) > 2*time.Minute
 }

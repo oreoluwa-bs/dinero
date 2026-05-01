@@ -4,18 +4,19 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+	applog "github.com/oreoluwa-bs/dinero/internal/logger"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
 )
 
 func (s Server) getCharge(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	lg := applog.WithTrace(ctx, s.logger)
 	span := trace.SpanFromContext(ctx)
 
 	ref := chi.URLParam(r, "reference")
@@ -30,20 +31,20 @@ func (s Server) getCharge(w http.ResponseWriter, r *http.Request) {
 	dbSpan.End()
 	if err != nil {
 		if err == sql.ErrNoRows {
-			s.logger.Info("payment not found", slog.String("reference", ref))
+			lg.Info("payment not found", "reference", ref)
 			writeError(w, http.StatusNotFound, "payment not found")
 			return
 		}
-		s.logger.Error("failed to get payment", slog.String("reference", ref), slog.String("error", err.Error()))
+		lg.Error("failed to get payment", "reference", ref, "error", err.Error())
 		span.RecordError(err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	s.logger.Info("payment lookup",
-		slog.String("reference", payment.Reference),
-		slog.String("status", payment.Status),
-		slog.Int64("attempts", payment.Attempts),
+	lg.Info("payment lookup",
+		"reference", payment.Reference,
+		"status", payment.Status,
+		"attempts", payment.Attempts,
 	)
 
 	writeJSON(w, http.StatusOK, ApiResponse{
@@ -60,11 +61,12 @@ type createChargeRequest struct {
 
 func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
+	lg := applog.WithTrace(ctx, s.logger)
 	span := trace.SpanFromContext(ctx)
 
 	var req createChargeRequest
 	if err := decodeJSON(r, &req); err != nil {
-		s.logger.Error("failed to decode charge request", slog.String("error", err.Error()))
+		lg.Error("failed to decode charge request", "error", err.Error())
 		span.RecordError(err)
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -82,11 +84,11 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		attribute.String("charge.currency", req.Currency),
 	)
 
-	s.logger.Info("charge request received",
-		slog.String("reference", req.Reference),
-		slog.String("idempotency_key", idemKey),
-		slog.Int64("amount", req.Amount),
-		slog.String("currency", req.Currency),
+	lg.Info("charge request received",
+		"reference", req.Reference,
+		"idempotency_key", idemKey,
+		"amount", req.Amount,
+		"currency", req.Currency,
 	)
 
 	idemCtx, idemSpan := s.tracer.Start(ctx, "db.GetPaymentByIdempotency")
@@ -96,19 +98,19 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 	})
 	idemSpan.End()
 	if err != nil && err != sql.ErrNoRows {
-		s.logger.Error("failed to check idempotency",
-			slog.String("idempotency_key", idemKey),
-			slog.String("error", err.Error()),
+		lg.Error("failed to check idempotency",
+			"idempotency_key", idemKey,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err == nil {
-		s.logger.Info("idempotent replay, returning existing payment",
-			slog.String("idempotency_key", idemKey),
-			slog.String("reference", existingPayment.Reference),
-			slog.String("status", existingPayment.Status),
+		lg.Info("idempotent replay, returning existing payment",
+			"idempotency_key", idemKey,
+			"reference", existingPayment.Reference,
+			"status", existingPayment.Status,
 		)
 		writeJSON(w, http.StatusOK, ApiResponse{
 			Data:    existingPayment,
@@ -120,9 +122,9 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 	// Use outbox pattern: create payment and outbox entry in a single transaction
 	tx, err := s.db.Begin()
 	if err != nil {
-		s.logger.Error("failed to begin transaction",
-			slog.String("reference", req.Reference),
-			slog.String("error", err.Error()),
+		lg.Error("failed to begin transaction",
+			"reference", req.Reference,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -144,9 +146,9 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 	})
 	createSpan.End()
 	if err != nil {
-		s.logger.Error("failed to create payment",
-			slog.String("reference", req.Reference),
-			slog.String("error", err.Error()),
+		lg.Error("failed to create payment",
+			"reference", req.Reference,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -159,9 +161,9 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		"status":                  "created",
 	})
 	if err != nil {
-		s.logger.Error("failed to marshal outbox payload",
-			slog.String("reference", c.Reference),
-			slog.String("error", err.Error()),
+		lg.Error("failed to marshal outbox payload",
+			"reference", c.Reference,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -175,9 +177,9 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 	})
 	outboxSpan.End()
 	if err != nil {
-		s.logger.Error("failed to insert outbox",
-			slog.String("reference", c.Reference),
-			slog.String("error", err.Error()),
+		lg.Error("failed to insert outbox",
+			"reference", c.Reference,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -188,19 +190,19 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 	err = tx.Commit()
 	commitSpan.End()
 	if err != nil {
-		s.logger.Error("failed to commit transaction",
-			slog.String("reference", c.Reference),
-			slog.String("error", err.Error()),
+		lg.Error("failed to commit transaction",
+			"reference", c.Reference,
+			"error", err.Error(),
 		)
 		span.RecordError(err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	s.logger.Info("payment created and queued via outbox",
-		slog.String("idempotency_key", c.IdempotencyKey.String),
-		slog.String("reference", c.Reference),
-		slog.String("status", c.Status),
+	lg.Info("payment created and queued via outbox",
+		"idempotency_key", c.IdempotencyKey.String,
+		"reference", c.Reference,
+		"status", c.Status,
 	)
 
 	if s.metrics != nil {
@@ -220,9 +222,10 @@ func (s Server) health(w http.ResponseWriter, r *http.Request) {
 func (s Server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
+	lg := applog.WithTrace(ctx, s.logger)
 
 	if err := s.db.PingContext(ctx); err != nil {
-		s.logger.Error("readiness check failed", slog.String("error", err.Error()))
+		lg.Error("readiness check failed", "error", err.Error())
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
