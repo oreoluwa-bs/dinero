@@ -47,6 +47,7 @@ func (s *Server) Router() http.Handler {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(otelhttp.NewMiddleware("dinero-api", otelhttp.WithTracerProvider(s.tracerProvider)))
+	r.Use(s.metrics.HTTPMiddleware)
 
 	r.Get("/metrics", metrics.HandlerFor(s.registry).ServeHTTP)
 	r.Get("/health", s.health)

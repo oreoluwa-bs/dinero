@@ -1,23 +1,30 @@
 package metrics
 
 import (
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/go-chi/chi"
+	"github.com/go-chi/chi/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"net/http"
 )
 
 type Metrics struct {
-	PaymentsTotal      *prometheus.CounterVec
-	PaymentsRetried    prometheus.Counter
-	ProviderCalls      *prometheus.CounterVec
-	QueueMessages      *prometheus.CounterVec
-	SweeperResets      prometheus.Counter
-	ProcessingDuration prometheus.Histogram
-	ProviderDuration   prometheus.Histogram
-	ActiveProcessing   prometheus.Gauge
-	PendingRetry       prometheus.Gauge
+	PaymentsTotal       *prometheus.CounterVec
+	PaymentsRetried     prometheus.Counter
+	ProviderCalls       *prometheus.CounterVec
+	QueueMessages       *prometheus.CounterVec
+	SweeperResets       prometheus.Counter
+	ProcessingDuration  prometheus.Histogram
+	ProviderDuration    prometheus.Histogram
+	ActiveProcessing    prometheus.Gauge
+	PendingRetry        prometheus.Gauge
+	HTTPRequestsTotal   *prometheus.CounterVec
+	HTTPRequestDuration prometheus.Histogram
 }
 
 func NewRegistry() *prometheus.Registry {
@@ -77,7 +84,41 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "dinero_payments_pending_retry",
 			Help: "Failed payments awaiting retry",
 		}),
+
+		HTTPRequestsTotal: promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+			Name: "dinero_http_requests_total",
+			Help: "Total HTTP requests by method, route pattern, and status",
+		}, []string{"method", "path", "status"}),
+
+		HTTPRequestDuration: promauto.With(reg).NewHistogram(prometheus.HistogramOpts{
+			Name:    "dinero_http_request_duration_seconds",
+			Help:    "HTTP request latency by method and route pattern",
+			Buckets: prometheus.DefBuckets,
+		}),
 	}
+}
+
+// HTTPMiddleware instruments every HTTP request with Prometheus metrics.
+// It should be applied after chi routes are mounted so RoutePattern() is accurate.
+func (m *Metrics) HTTPMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		start := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+
+		path := chi.RouteContext(r.Context()).RoutePattern()
+		if path == "" {
+			path = r.URL.Path
+		}
+
+		m.HTTPRequestsTotal.WithLabelValues(r.Method, path, strconv.Itoa(ww.Status())).Inc()
+		m.HTTPRequestDuration.Observe(time.Since(start).Seconds())
+	})
 }
 
 func HandlerFor(reg *prometheus.Registry) http.Handler {

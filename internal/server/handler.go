@@ -10,13 +10,13 @@ import (
 
 	"github.com/go-chi/chi"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
 )
 
 func (s Server) getCharge(w http.ResponseWriter, r *http.Request) {
-	tracer := s.tracer
-	ctx, span := tracer.Start(r.Context(), "server.getCharge")
-	defer span.End()
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
 
 	ref := chi.URLParam(r, "reference")
 	if ref == "" {
@@ -25,7 +25,7 @@ func (s Server) getCharge(w http.ResponseWriter, r *http.Request) {
 	}
 	span.SetAttributes(attribute.String("charge.reference", ref))
 
-	dbCtx, dbSpan := tracer.Start(ctx, "db.GetPaymentByReference")
+	dbCtx, dbSpan := s.tracer.Start(ctx, "db.GetPaymentByReference")
 	payment, err := s.store.GetPaymentByReference(dbCtx, ref)
 	dbSpan.End()
 	if err != nil {
@@ -59,9 +59,8 @@ type createChargeRequest struct {
 }
 
 func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
-	tracer := s.tracer
-	ctx, span := tracer.Start(r.Context(), "server.createCharge")
-	defer span.End()
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
 
 	var req createChargeRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -90,7 +89,7 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		slog.String("currency", req.Currency),
 	)
 
-	idemCtx, idemSpan := tracer.Start(ctx, "db.GetPaymentByIdempotency")
+	idemCtx, idemSpan := s.tracer.Start(ctx, "db.GetPaymentByIdempotency")
 	existingPayment, err := s.store.GetPaymentByIdempotency(idemCtx, sql.NullString{
 		String: idemKey,
 		Valid:  idemKey != "",
@@ -132,7 +131,7 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback()
 	qtx := s.store.WithTx(tx)
 
-	createCtx, createSpan := tracer.Start(ctx, "db.CreatePayment")
+	createCtx, createSpan := s.tracer.Start(ctx, "db.CreatePayment")
 	c, err := qtx.CreatePayment(createCtx, repository.CreatePaymentParams{
 		Amount:    req.Amount,
 		Currency:  req.Currency,
@@ -169,7 +168,7 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	outboxCtx, outboxSpan := tracer.Start(ctx, "db.InsertOutbox")
+	outboxCtx, outboxSpan := s.tracer.Start(ctx, "db.InsertOutbox")
 	err = qtx.InsertOutbox(outboxCtx, repository.InsertOutboxParams{
 		Topic:   "payments.queue",
 		Payload: payload,
@@ -185,7 +184,7 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, commitSpan := tracer.Start(ctx, "db.commit")
+	_, commitSpan := s.tracer.Start(ctx, "db.commit")
 	err = tx.Commit()
 	commitSpan.End()
 	if err != nil {
