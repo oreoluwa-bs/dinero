@@ -12,6 +12,7 @@ import (
 	"github.com/oreoluwa-bs/dinero/internal/metrics"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -51,7 +52,7 @@ func TestWorkerCrash_Recovers(t *testing.T) {
 	mockProv := provider.NewMockProvider()
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
-	svc := NewService(*store, mockProv, db, testLogger(), mtr)
+	svc := NewService(*store, mockProv, db, testLogger(), mtr, noop.NewTracerProvider().Tracer(""))
 
 	// Step 1: Create a payment in pending state
 	_, err := store.CreatePayment(context.Background(), repository.CreatePaymentParams{
@@ -123,7 +124,7 @@ func TestDuplicateWebhook_IsIdempotent(t *testing.T) {
 	successProv := &alwaysSuccessProvider{}
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
-	svc := NewService(*store, successProv, db, testLogger(), mtr)
+	svc := NewService(*store, successProv, db, testLogger(), mtr, noop.NewTracerProvider().Tracer(""))
 
 	// Step 1: Create a payment
 	_, err := store.CreatePayment(context.Background(), repository.CreatePaymentParams{
@@ -188,7 +189,7 @@ func TestPoisonMessage_Terminal(t *testing.T) {
 	mockProv := provider.NewMockProvider()
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
-	svc := NewService(*store, mockProv, db, testLogger(), mtr)
+	svc := NewService(*store, mockProv, db, testLogger(), mtr, noop.NewTracerProvider().Tracer(""))
 
 	// Step 1: Missing idempotency key — should return nil (Ack), not error (Nack)
 	badPayload := []byte(`{"payment_reference": "bad_001"}`)
@@ -226,7 +227,7 @@ func TestProviderFailure_RetryScheduled(t *testing.T) {
 
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
-	svc := NewService(*store, failProv, db, testLogger(), mtr)
+	svc := NewService(*store, failProv, db, testLogger(), mtr, noop.NewTracerProvider().Tracer(""))
 
 	// Create payment
 	_, err := store.CreatePayment(context.Background(), repository.CreatePaymentParams{

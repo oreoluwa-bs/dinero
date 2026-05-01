@@ -1,0 +1,72 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "Dinero Payment System",
+    "tags": ["dinero", "payments"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "Payments by Status (rate/min)",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(dinero_payments_total[1m])",
+            "legendFormat": "{{status}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+      },
+      {
+        "id": 2,
+        "title": "Active Processing (leak detector)",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "dinero_payments_processing_active"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+      },
+      {
+        "id": 3,
+        "title": "Provider Calls by Result",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "rate(dinero_provider_calls_total[1m])",
+            "legendFormat": "{{result}}"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+      },
+      {
+        "id": 4,
+        "title": "Sweeper Resets",
+        "type": "stat",
+        "targets": [
+          {
+            "expr": "dinero_sweeper_resets_total"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+      },
+      {
+        "id": 5,
+        "title": "Processing Duration (p99)",
+        "type": "timeseries",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.99, rate(dinero_payment_processing_duration_seconds_bucket[5m]))"
+          }
+        ],
+        "gridPos": {"h": 8, "w": 24, "x": 0, "y": 16}
+      }
+    ],
+    "time": {
+      "from": "now-5m",
+      "to": "now"
+    },
+    "refresh": "5s"
+  }
+}

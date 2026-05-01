@@ -8,6 +8,8 @@ import (
 	"github.com/go-chi/chi"
 	"github.com/go-chi/chi/middleware"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/trace"
 	"github.com/oreoluwa-bs/dinero/internal/metrics"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/queue"
@@ -22,9 +24,11 @@ type Server struct {
 	logger          *slog.Logger
 	registry        *prometheus.Registry
 	metrics         *metrics.Metrics
+	tracerProvider  trace.TracerProvider
+	tracer          trace.Tracer
 }
 
-func NewServer(prov provider.Provider, store repository.Queries, db *sql.DB, publisher queue.Publisher, logger *slog.Logger, registry *prometheus.Registry, mtr *metrics.Metrics) *Server {
+func NewServer(prov provider.Provider, store repository.Queries, db *sql.DB, publisher queue.Publisher, logger *slog.Logger, registry *prometheus.Registry, mtr *metrics.Metrics, tracerProvider trace.TracerProvider, tracer trace.Tracer) *Server {
 	return &Server{
 		paymentProvider: prov,
 		store:           store,
@@ -33,6 +37,8 @@ func NewServer(prov provider.Provider, store repository.Queries, db *sql.DB, pub
 		logger:          logger,
 		registry:        registry,
 		metrics:         mtr,
+		tracerProvider:  tracerProvider,
+		tracer:          tracer,
 	}
 }
 
@@ -40,6 +46,7 @@ func (s *Server) Router() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	r.Use(otelhttp.NewMiddleware("dinero-api", otelhttp.WithTracerProvider(s.tracerProvider)))
 
 	r.Get("/metrics", metrics.HandlerFor(s.registry).ServeHTTP)
 	r.Get("/health", s.health)

@@ -18,6 +18,7 @@ import (
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/queue"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
+	"github.com/oreoluwa-bs/dinero/internal/tracing"
 )
 
 func main() {
@@ -28,6 +29,14 @@ func main() {
 
 	lg := logger.New(cfg)
 	slog.SetDefault(lg)
+
+	tracerProvider, err := tracing.InitTracer(ctx, "dinero-worker", lg)
+	if err != nil {
+		slog.Error("tracer init failed", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer tracing.Shutdown(ctx, tracerProvider, lg)
+	tracer := tracerProvider.Tracer("github.com/oreoluwa-bs/dinero")
 
 	db := database.NewDatabase(cfg.DATABASE_URL)
 	if err := database.Up(db, "database/migrations"); err != nil {
@@ -40,7 +49,7 @@ func main() {
 
 	store := repository.New(db)
 	paymentPrv := provider.NewMockProvider()
-	rabbit, err := queue.New(cfg.RABBITMQ_URL)
+	rabbit, err := queue.New(cfg.RABBITMQ_URL, tracer)
 	if err != nil {
 		slog.Error("queue init failed",
 			slog.String("error", err.Error()),
@@ -51,7 +60,7 @@ func main() {
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
 
-	paymentSvc := payment.NewService(*store, paymentPrv, db, lg, mtr)
+	paymentSvc := payment.NewService(*store, paymentPrv, db, lg, mtr, tracer)
 
 	paymentSvc.StartRetryPoller(ctx, rabbit, 5*time.Second)
 	paymentSvc.StartProcessingSweeper(ctx, 5*time.Second)

@@ -14,6 +14,7 @@ import (
 	"github.com/oreoluwa-bs/dinero/database"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -74,7 +75,8 @@ func TestHappyPath_Green(t *testing.T) {
 
 	logger := setupLogger()
 
-	srv := NewServer(&testProvider{}, *store, db, &mockPublisher{}, logger, nil, nil)
+	tp := noop.NewTracerProvider()
+	srv := NewServer(&testProvider{}, *store, db, &mockPublisher{}, logger, nil, nil, tp, tp.Tracer(""))
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 
@@ -103,7 +105,8 @@ func TestDuplicateReference_ShouldFail_Red(t *testing.T) {
 	defer db.Close()
 
 	logger := setupLogger()
-	srv := NewServer(&testProvider{}, *store, db, &mockPublisher{}, logger, nil, nil)
+	tp := noop.NewTracerProvider()
+	srv := NewServer(&testProvider{}, *store, db, &mockPublisher{}, logger, nil, nil, tp, tp.Tracer(""))
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 
@@ -143,8 +146,9 @@ func TestTimeout_ShouldFail_Red(t *testing.T) {
 	defer db.Close()
 
 	logger := setupLogger()
+	tp := noop.NewTracerProvider()
 	p := &testProvider{delay: 100 * time.Millisecond}
-	srv := NewServer(p, *store, db, &mockPublisher{}, logger, nil, nil)
+	srv := NewServer(p, *store, db, &mockPublisher{}, logger, nil, nil, tp, tp.Tracer(""))
 	ts := httptest.NewServer(srv.Router())
 	defer ts.Close()
 

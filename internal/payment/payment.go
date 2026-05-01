@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"github.com/oreoluwa-bs/dinero/internal/metrics"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
@@ -24,6 +26,7 @@ type Service struct {
 	db       *sql.DB
 	logger   *slog.Logger
 	metrics  *metrics.Metrics
+	tracer   trace.Tracer
 }
 
 func NewService(
@@ -32,6 +35,7 @@ func NewService(
 	db *sql.DB,
 	logger *slog.Logger,
 	mtr *metrics.Metrics,
+	tracer trace.Tracer,
 ) *Service {
 	return &Service{
 		store:    store,
@@ -39,16 +43,22 @@ func NewService(
 		db:       db,
 		logger:   logger,
 		metrics:  mtr,
+		tracer:   tracer,
 	}
 }
 
 func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
+	tracer := s.tracer
+	ctx, span := tracer.Start(ctx, "payment.HandlePaymentEvent")
+	defer span.End()
+
 	start := time.Now()
 
 	var val map[string]interface{}
 	err := json.Unmarshal(payload, &val)
 	if err != nil {
 		s.logger.Error("failed to unmarshal payment event, dropping poison message", slog.String("error", err.Error()))
+		span.RecordError(err)
 		return nil // Ack — don't requeue unrecoverable errors
 	}
 
@@ -59,6 +69,11 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	}
 
 	ref, _ := val["payment_reference"].(string)
+
+	span.SetAttributes(
+		attribute.String("payment.idempotency_key", idemKey),
+		attribute.String("payment.reference", ref),
+	)
 
 	s.logger.Info("payment event received",
 		slog.String("idempotency_key", idemKey),
@@ -71,22 +86,31 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 			slog.String("idempotency_key", idemKey),
 			slog.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return err
 	}
 	defer tx.Rollback()
 	qtx := s.store.WithTx(tx)
 
-	pm, err := qtx.GetPaymentByIdempotency(ctx, sql.NullString{
+	dbCtx, dbSpan := tracer.Start(ctx, "db.GetPaymentByIdempotency")
+	pm, err := qtx.GetPaymentByIdempotency(dbCtx, sql.NullString{
 		String: idemKey,
 		Valid:  idemKey != "",
 	})
+	dbSpan.End()
 	if err != nil {
 		s.logger.Error("failed to get payment by idempotency",
 			slog.String("idempotency_key", idemKey),
 			slog.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return err
 	}
+
+	span.SetAttributes(
+		attribute.String("payment.status", pm.Status),
+		attribute.Int64("payment.attempts", pm.Attempts),
+	)
 
 	s.logger.Info("payment state resolved",
 		slog.String("idempotency_key", idemKey),
@@ -125,7 +149,9 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		return nil
 	}
 
-	err = qtx.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
+	updateCtx, updateSpan := tracer.Start(ctx, "db.UpdatePaymentStatus")
+	updateSpan.SetAttributes(attribute.String("payment.status", "processing"))
+	err = qtx.UpdatePaymentStatus(updateCtx, repository.UpdatePaymentStatusParams{
 		Status:   "processing",
 		Attempts: pm.Attempts + 1,
 		ProcessingStartedAt: sql.NullString{
@@ -137,11 +163,13 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 			Valid:  idemKey != "",
 		},
 	})
+	updateSpan.End()
 	if err != nil {
 		s.logger.Error("failed to update payment status to processing",
 			slog.String("idempotency_key", idemKey),
 			slog.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return err
 	}
 
@@ -152,11 +180,15 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 	)
 
 	// This prevents double-charge because the provider call is not inside a rollbackable transaction.
-	if err := tx.Commit(); err != nil {
+	_, commitSpan := tracer.Start(ctx, "db.commit")
+	err = tx.Commit()
+	commitSpan.End()
+	if err != nil {
 		s.logger.Error("failed to commit processing lease",
 			slog.String("idempotency_key", idemKey),
 			slog.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return err
 	}
 
@@ -164,12 +196,22 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		s.metrics.ActiveProcessing.Inc()
 	}
 
+	providerCtx, providerSpan := tracer.Start(ctx, "provider.Charge")
+	providerSpan.SetAttributes(
+		attribute.String("provider.reference", pm.Reference),
+		attribute.Int64("provider.amount", pm.Amount),
+		attribute.String("provider.currency", pm.Currency),
+	)
 	providerStart := time.Now()
-	err = s.provider.Charge(ctx, provider.CreateCharge{
+	err = s.provider.Charge(providerCtx, provider.CreateCharge{
 		Amount:    pm.Amount,
 		Currency:  pm.Currency,
 		Reference: pm.Reference,
 	})
+	if err != nil {
+		providerSpan.RecordError(err)
+	}
+	providerSpan.End()
 	if s.metrics != nil {
 		s.metrics.ProviderDuration.Observe(time.Since(providerStart).Seconds())
 	}
@@ -181,7 +223,9 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		}
 
 		retyAt := time.Now().UTC().Add(time.Minute * time.Duration(pm.Attempts))
-		updateErr := s.store.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
+		failCtx, failSpan := tracer.Start(ctx, "db.UpdatePaymentStatus")
+		failSpan.SetAttributes(attribute.String("payment.status", "failed"))
+		updateErr := s.store.UpdatePaymentStatus(failCtx, repository.UpdatePaymentStatusParams{
 			Status:   "failed",
 			Attempts: pm.Attempts + 1,
 			IdempotencyKey: sql.NullString{
@@ -194,12 +238,14 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 			},
 			ProcessingStartedAt: sql.NullString{},
 		})
+		failSpan.End()
 
 		if updateErr != nil {
 			s.logger.Error("failed to update payment status to failed",
 				slog.String("idempotency_key", idemKey),
 				slog.String("error", updateErr.Error()),
 			)
+			span.RecordError(updateErr)
 			return updateErr
 		}
 
@@ -237,7 +283,9 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 		s.metrics.ActiveProcessing.Dec()
 	}
 
-	err = s.store.UpdatePaymentStatus(ctx, repository.UpdatePaymentStatusParams{
+	completeCtx, completeSpan := tracer.Start(ctx, "db.UpdatePaymentStatus")
+	completeSpan.SetAttributes(attribute.String("payment.status", "completed"))
+	err = s.store.UpdatePaymentStatus(completeCtx, repository.UpdatePaymentStatusParams{
 		Status:              "completed",
 		Attempts:            pm.Attempts + 1,
 		ProcessingStartedAt: sql.NullString{},
@@ -246,11 +294,13 @@ func (s Service) HandlePaymentEvent(ctx context.Context, payload []byte) error {
 			Valid:  idemKey != "",
 		},
 	})
+	completeSpan.End()
 	if err != nil {
 		s.logger.Error("failed to update payment status to completed",
 			slog.String("idempotency_key", idemKey),
 			slog.String("error", err.Error()),
 		)
+		span.RecordError(err)
 		return err
 	}
 
@@ -286,15 +336,21 @@ func (s Service) StartRetryPoller(ctx context.Context, publisher Publisher, inte
 }
 
 func (s Service) retryFailedPayments(ctx context.Context, publisher Publisher) {
+	tracer := s.tracer
+	ctx, span := tracer.Start(ctx, "payment.retryFailedPayments")
+	defer span.End()
+
 	payments, err := s.store.GetFailedPaymentsForRetry(ctx)
 	if err != nil {
 		s.logger.Error("failed to fetch payments for retry", slog.String("error", err.Error()))
+		span.RecordError(err)
 		return
 	}
 	if len(payments) == 0 {
 		return
 	}
 
+	span.SetAttributes(attribute.Int("payment.retry_count", len(payments)))
 	s.logger.Info("retrying failed payments", slog.Int("count", len(payments)))
 	if s.metrics != nil {
 		s.metrics.PendingRetry.Set(float64(len(payments)))
@@ -343,13 +399,19 @@ func (s Service) StartProcessingSweeper(ctx context.Context, interval time.Durat
 }
 
 func (s Service) resetStaleProcessingPayments(ctx context.Context) {
+	tracer := s.tracer
+	ctx, span := tracer.Start(ctx, "payment.resetStaleProcessingPayments")
+	defer span.End()
+
 	rows, err := s.store.ResetStaleProcessingPayments(ctx)
 	if err != nil {
 		s.logger.Error("failed to reset stale processing payments", slog.String("error", err.Error()))
+		span.RecordError(err)
 		return
 	}
 
 	if rows > 0 {
+		span.SetAttributes(attribute.Int64("sweeper.rows_reset", rows))
 		s.logger.Info("reset stale processing payments",
 			slog.Int64("rows", rows))
 		if s.metrics != nil {
