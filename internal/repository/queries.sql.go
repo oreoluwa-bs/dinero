@@ -187,6 +187,81 @@ func (q *Queries) GetPaymentByReference(ctx context.Context, reference string) (
 	return i, err
 }
 
+const getUnsentOutboxMessages = `-- name: GetUnsentOutboxMessages :many
+SELECT id, topic, payload
+FROM outbox
+WHERE sent_at IS NULL
+  AND error_count < 5
+ORDER BY created_at ASC
+LIMIT 50
+`
+
+type GetUnsentOutboxMessagesRow struct {
+	ID      int64
+	Topic   string
+	Payload []byte
+}
+
+func (q *Queries) GetUnsentOutboxMessages(ctx context.Context) ([]GetUnsentOutboxMessagesRow, error) {
+	rows, err := q.db.QueryContext(ctx, getUnsentOutboxMessages)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetUnsentOutboxMessagesRow
+	for rows.Next() {
+		var i GetUnsentOutboxMessagesRow
+		if err := rows.Scan(&i.ID, &i.Topic, &i.Payload); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const incrementOutboxErrorCount = `-- name: IncrementOutboxErrorCount :exec
+UPDATE outbox
+SET error_count = error_count + 1
+WHERE id = ?
+`
+
+func (q *Queries) IncrementOutboxErrorCount(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, incrementOutboxErrorCount, id)
+	return err
+}
+
+const insertOutbox = `-- name: InsertOutbox :exec
+INSERT INTO outbox (topic, payload)
+VALUES (?, ?)
+`
+
+type InsertOutboxParams struct {
+	Topic   string
+	Payload []byte
+}
+
+func (q *Queries) InsertOutbox(ctx context.Context, arg InsertOutboxParams) error {
+	_, err := q.db.ExecContext(ctx, insertOutbox, arg.Topic, arg.Payload)
+	return err
+}
+
+const markOutboxMessageSent = `-- name: MarkOutboxMessageSent :exec
+UPDATE outbox
+SET sent_at = datetime('now')
+WHERE id = ?
+`
+
+func (q *Queries) MarkOutboxMessageSent(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, markOutboxMessageSent, id)
+	return err
+}
+
 const resetStaleProcessingPayments = `-- name: ResetStaleProcessingPayments :execrows
 UPDATE payments
 SET status = 'failed',

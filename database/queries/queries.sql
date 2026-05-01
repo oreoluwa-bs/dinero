@@ -60,3 +60,25 @@ SET status = 'failed',
 WHERE status = 'processing'
   AND processing_started_at IS NOT NULL
   AND datetime(processing_started_at) <= datetime('now', '-2 minutes');
+
+-- name: InsertOutbox :exec
+INSERT INTO outbox (topic, payload)
+VALUES (?, ?);
+
+-- name: GetUnsentOutboxMessages :many
+SELECT id, topic, payload
+FROM outbox
+WHERE sent_at IS NULL
+  AND error_count < 5
+ORDER BY created_at ASC
+LIMIT 50;
+
+-- name: MarkOutboxMessageSent :exec
+UPDATE outbox
+SET sent_at = datetime('now')
+WHERE id = ?;
+
+-- name: IncrementOutboxErrorCount :exec
+UPDATE outbox
+SET error_count = error_count + 1
+WHERE id = ?;

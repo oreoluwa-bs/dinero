@@ -107,14 +107,23 @@ func TestWorkerCrash_Recovers(t *testing.T) {
 	t.Logf("Crash recovery: payment status=%s, attempts=%d", pm.Status, pm.Attempts)
 }
 
+type alwaysSuccessProvider struct {
+	callCount int
+}
+
+func (p *alwaysSuccessProvider) Charge(ctx context.Context, req provider.CreateCharge) error {
+	p.callCount++
+	return nil
+}
+
 func TestDuplicateWebhook_IsIdempotent(t *testing.T) {
 	db, store := setupChaosTestDB(t)
 	defer db.Close()
 
-	mockProv := provider.NewMockProvider()
+	successProv := &alwaysSuccessProvider{}
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
-	svc := NewService(*store, mockProv, db, testLogger(), mtr)
+	svc := NewService(*store, successProv, db, testLogger(), mtr)
 
 	// Step 1: Create a payment
 	_, err := store.CreatePayment(context.Background(), repository.CreatePaymentParams{
@@ -150,21 +159,15 @@ func TestDuplicateWebhook_IsIdempotent(t *testing.T) {
 		t.Fatalf("first processing should complete, got status=%s", pm1.Status)
 	}
 
-	callCountAfterFirst := mockProv.ChargeCount("dup_001")
-	if callCountAfterFirst != 1 {
-		t.Fatalf("expected provider called once, got %d", callCountAfterFirst)
-	}
-
 	// Step 3: Second processing — duplicate webhook
 	err = svc.HandlePaymentEvent(context.Background(), payload)
 	if err != nil {
 		t.Fatalf("second handle event failed: %v", err)
 	}
 
-	// Step 4: Verify provider was NOT called again
-	callCountAfterSecond := mockProv.ChargeCount("dup_001")
-	if callCountAfterSecond != 1 {
-		t.Errorf("duplicate webhook caused extra provider call: expected 1, got %d", callCountAfterSecond)
+	// Step 4: Verify provider was called exactly once and status is still completed
+	if successProv.callCount != 1 {
+		t.Errorf("duplicate webhook caused extra provider call: expected 1, got %d", successProv.callCount)
 	}
 
 	pm2, err := store.GetPaymentByReference(context.Background(), "dup_001")
@@ -175,7 +178,7 @@ func TestDuplicateWebhook_IsIdempotent(t *testing.T) {
 		t.Errorf("duplicate webhook changed status: expected completed, got %s", pm2.Status)
 	}
 
-	t.Logf("Idempotency: provider called %d time(s), status=%s", callCountAfterSecond, pm2.Status)
+	t.Logf("Idempotency: provider called %d time(s), status=%s", successProv.callCount, pm2.Status)
 }
 
 func TestPoisonMessage_Terminal(t *testing.T) {

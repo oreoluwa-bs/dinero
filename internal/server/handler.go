@@ -95,7 +95,20 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c, err := s.store.CreatePayment(context.Background(), repository.CreatePaymentParams{
+	// Use outbox pattern: create payment and outbox entry in a single transaction
+	tx, err := s.db.Begin()
+	if err != nil {
+		s.logger.Error("failed to begin transaction",
+			slog.String("reference", req.Reference),
+			slog.String("error", err.Error()),
+		)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer tx.Rollback()
+	qtx := s.store.WithTx(tx)
+
+	c, err := qtx.CreatePayment(ctx, repository.CreatePaymentParams{
 		Amount:    req.Amount,
 		Currency:  req.Currency,
 		Reference: req.Reference,
@@ -114,7 +127,43 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.logger.Info("payment created",
+	payload, err := json.Marshal(map[string]string{
+		"payment_idempotency_key": c.IdempotencyKey.String,
+		"payment_reference":       c.Reference,
+		"status":                  "created",
+	})
+	if err != nil {
+		s.logger.Error("failed to marshal outbox payload",
+			slog.String("reference", c.Reference),
+			slog.String("error", err.Error()),
+		)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	err = qtx.InsertOutbox(ctx, repository.InsertOutboxParams{
+		Topic:   "payments.queue",
+		Payload: payload,
+	})
+	if err != nil {
+		s.logger.Error("failed to insert outbox",
+			slog.String("reference", c.Reference),
+			slog.String("error", err.Error()),
+		)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		s.logger.Error("failed to commit transaction",
+			slog.String("reference", c.Reference),
+			slog.String("error", err.Error()),
+		)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	s.logger.Info("payment created and queued via outbox",
 		slog.String("idempotency_key", c.IdempotencyKey.String),
 		slog.String("reference", c.Reference),
 		slog.String("status", c.Status),
@@ -122,36 +171,6 @@ func (s Server) createCharge(w http.ResponseWriter, r *http.Request) {
 
 	if s.metrics != nil {
 		s.metrics.PaymentsTotal.WithLabelValues("pending").Inc()
-	}
-
-	payload, err := json.Marshal(map[string]string{"payment_idempotency_key": c.IdempotencyKey.String,
-		"payment_reference": c.Reference, "status": "created"})
-	if err != nil {
-		s.logger.Error("failed to marshal queue payload",
-			slog.String("reference", c.Reference),
-			slog.String("error", err.Error()),
-		)
-		if s.metrics != nil {
-			s.metrics.QueueMessages.WithLabelValues("publish", "error").Inc()
-		}
-	} else {
-		if pubErr := s.publisher.Publish(context.Background(), "", "payments.queue", payload); pubErr != nil {
-			s.logger.Error("failed to publish to queue",
-				slog.String("reference", c.Reference),
-				slog.String("error", pubErr.Error()),
-			)
-			if s.metrics != nil {
-				s.metrics.QueueMessages.WithLabelValues("publish", "error").Inc()
-			}
-		} else {
-			s.logger.Info("payment published to queue",
-				slog.String("reference", c.Reference),
-				slog.String("queue", "payments.queue"),
-			)
-			if s.metrics != nil {
-				s.metrics.QueueMessages.WithLabelValues("publish", "success").Inc()
-			}
-		}
 	}
 
 	writeJSON(w, http.StatusAccepted, ApiResponse{

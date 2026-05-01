@@ -13,6 +13,7 @@ import (
 	"github.com/oreoluwa-bs/dinero/internal/config"
 	"github.com/oreoluwa-bs/dinero/internal/logger"
 	"github.com/oreoluwa-bs/dinero/internal/metrics"
+	"github.com/oreoluwa-bs/dinero/internal/outbox"
 	"github.com/oreoluwa-bs/dinero/internal/provider"
 	"github.com/oreoluwa-bs/dinero/internal/queue"
 	"github.com/oreoluwa-bs/dinero/internal/repository"
@@ -47,6 +48,9 @@ func main() {
 	mtr := metrics.NewMetrics(reg)
 
 	apiServer := server.NewServer(paymentPrv, *store, db, qu, logger, reg, mtr)
+
+	outboxPoller := outbox.NewPoller(*store, qu, logger, 2*time.Second)
+	outboxPoller.Start(ctx)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.PORT,

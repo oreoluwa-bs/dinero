@@ -8,6 +8,15 @@ import (
 	"database/sql"
 )
 
+type Outbox struct {
+	ID         int64
+	Topic      string
+	Payload    []byte
+	CreatedAt  string
+	SentAt     sql.NullString
+	ErrorCount int64
+}
+
 type Payment struct {
 	ID                  int64
 	Amount              int64
