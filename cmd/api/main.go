@@ -30,7 +30,7 @@ func main() {
 	logger := logger.New(cfg)
 	slog.SetDefault(logger)
 
-	tracerProvider, err := tracing.InitTracer(ctx, "dinero-api", logger)
+	tracerProvider, err := tracing.InitTracer(ctx, "dinero-api", cfg.OTLP_ENDPOINT, logger)
 	if err != nil {
 		slog.Error("tracer init failed", slog.String("error", err.Error()))
 		os.Exit(1)

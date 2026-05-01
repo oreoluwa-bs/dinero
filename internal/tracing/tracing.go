@@ -12,10 +12,10 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
 )
 
-func InitTracer(ctx context.Context, serviceName string, logger *slog.Logger) (*sdktrace.TracerProvider, error) {
+func InitTracer(ctx context.Context, serviceName, otlpEndpoint string, logger *slog.Logger) (*sdktrace.TracerProvider, error) {
 	exporter, err := otlptracegrpc.New(ctx,
 		otlptracegrpc.WithInsecure(),
-		otlptracegrpc.WithEndpoint("localhost:4317"),
+		otlptracegrpc.WithEndpoint(otlpEndpoint),
 	)
 	if err != nil {
 		logger.Error("failed to create OTLP trace exporter", slog.String("error", err.Error()))
@@ -39,7 +39,7 @@ func InitTracer(ctx context.Context, serviceName string, logger *slog.Logger) (*
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 	)
 
-	logger.Info("tracer initialized", slog.String("service", serviceName))
+	logger.Info("tracer initialized", slog.String("service", serviceName), slog.String("endpoint", otlpEndpoint))
 
 	return provider, nil
 }
