@@ -46,7 +46,7 @@ func main() {
 	defer db.Close()
 
 	store := repository.New(db)
-	paymentPrv := provider.NewMockProvider()
+	paymentPrv := provider.NewMockProvider(cfg.PROVIDER_DELAY_MS, cfg.PROVIDER_FAILURE_RATE)
 	qu, err := queue.New(cfg.RABBITMQ_URL, tracer)
 	if err != nil {
 		slog.Error("queue init failed", slog.String("error", err.Error()))

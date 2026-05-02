@@ -49,7 +49,7 @@ func TestWorkerCrash_Recovers(t *testing.T) {
 	db, store := setupChaosTestDB(t)
 	defer db.Close()
 
-	mockProv := provider.NewMockProvider()
+	mockProv := provider.NewMockProvider(0, -1)
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
 	svc := NewService(*store, mockProv, db, testLogger(), mtr, noop.NewTracerProvider().Tracer(""))
@@ -186,7 +186,7 @@ func TestPoisonMessage_Terminal(t *testing.T) {
 	db, store := setupChaosTestDB(t)
 	defer db.Close()
 
-	mockProv := provider.NewMockProvider()
+	mockProv := provider.NewMockProvider(0, -1)
 	reg := metrics.NewRegistry()
 	mtr := metrics.NewMetrics(reg)
 	svc := NewService(*store, mockProv, db, testLogger(), mtr, noop.NewTracerProvider().Tracer(""))
@@ -221,7 +221,7 @@ func TestProviderFailure_RetryScheduled(t *testing.T) {
 
 	// Provider that always fails
 	failProv := &chaosMockProvider{
-		MockProvider: provider.NewMockProvider(),
+		MockProvider: provider.NewMockProvider(0, -1),
 		shouldFail:   true,
 	}
 

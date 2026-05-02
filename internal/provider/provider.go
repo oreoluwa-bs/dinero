@@ -22,13 +22,20 @@ var TimeoutError = errors.New("Timeout Error")
 var NetworkError = errors.New("Network Error")
 
 type MockProvider struct {
-	mu        sync.Mutex
-	callCount map[string]int
+	mu          sync.Mutex
+	callCount   map[string]int
+	delayMs     int
+	failureRate float64
 }
 
-func NewMockProvider() *MockProvider {
+// NewMockProvider creates a mock provider.
+// If delayMs is 0, delay is random (50-500ms).
+// If failureRate is negative, failure rate is random (~50%).
+func NewMockProvider(delayMs int, failureRate float64) *MockProvider {
 	return &MockProvider{
-		callCount: make(map[string]int),
+		callCount:   make(map[string]int),
+		delayMs:     delayMs,
+		failureRate: failureRate,
 	}
 }
 
@@ -40,9 +47,14 @@ func (p *MockProvider) Charge(ctx context.Context, req CreateCharge) error {
 		p.callCount[req.Reference]++
 	}
 
-	max := 500
-	min := 50
-	delay := time.Duration(rand.IntN(max-min)+min) * time.Millisecond
+	var delay time.Duration
+	if p.delayMs > 0 {
+		delay = time.Duration(p.delayMs) * time.Millisecond
+	} else {
+		max := 500
+		min := 50
+		delay = time.Duration(rand.IntN(max-min)+min) * time.Millisecond
+	}
 
 	select {
 	case <-time.After(delay):
@@ -50,7 +62,14 @@ func (p *MockProvider) Charge(ctx context.Context, req CreateCharge) error {
 		return TimeoutError
 	}
 
-	if rand.N(10) > 5 {
+	var shouldFail bool
+	if p.failureRate >= 0 {
+		shouldFail = rand.Float64() < p.failureRate
+	} else {
+		shouldFail = rand.N(10) > 5
+	}
+
+	if shouldFail {
 		return NetworkError
 	}
 
